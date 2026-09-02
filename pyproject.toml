@@ -1,19 +1,17 @@
-# Rename `integration-template` (PyPI/distribution name, hyphens) and the
-# `integration_template/` package directory (import name, underscores) to your own — by
-# convention `majordom-<protocol>` / `majordom_<protocol>` (e.g. majordom-homekit /
-# majordom_homekit). Keep them matching so poetry-core auto-detects the package, and update
-# `pypi-package-name` in the release stub + `--cov=` below to match.
 [project]
-name = "integration-template"
+name = "majordom-esphome"
 version = "0.1.0"
-description = "A MajorDom integration."
-authors = [{ name = "Mark Parker", email = "mark@parker-programs.com" }]
+description = "MajorDom integration for ESPHome devices."
+authors = [
+    { name = "Mark Parker", email = "mark@parker-programs.com" }   
+]
 readme = "README.md"
-# The template scaffold is Apache-2.0. Relicense your integration as you see fit — note
-# that linking a copyleft (GPL/AGPL) protocol library may constrain your choice.
 license = "Apache-2.0"
 license-files = ["LICENSE"]
-keywords = ["majordom", "smart-home", "home-automation", "iot", "integration", "template", "scaffold"]
+keywords = [
+    "majordom", "smart-home", "home-automation", "iot",
+    "esphome", "integration"
+]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -23,6 +21,8 @@ classifiers = [
 requires-python = ">=3.12"
 dependencies = [
     "majordom-integration-sdk (>=0.1.5,<1.0)",
+    "aioesphomeapi (>=25.0.0,<26.0)",
+    "pydantic (>=2.0.0,<3.0.0)",          
 ]
 
 [project.urls]
@@ -33,9 +33,9 @@ Repository = "https://github.com/MajorDom-Systems/integration-template"
 [dependency-groups]
 dev = [
     "poethepoet (>=0.36.0,<1.0.0)",
-    "ty",             # type checker; swap for mypy/pyright by editing the `check` task below
+    "ty",
     "ruff",
-    "pip-audit",      # dependency vuln scan — gates release (not everyday CI); run locally with `poetry run pip-audit`
+    "pip-audit",
     "pytest",
     "pytest-asyncio",
     "pytest-cov",
@@ -45,9 +45,9 @@ dev = [
     "pytest-profiling",
     "pytest-resource-usage",
     "coverage",
-    "pympler",        # object memory introspection, leak hunting
-    "psutil",         # process/system resource usage
-    "faker",          # realistic fake data for tests
+    "pympler",
+    "psutil",
+    "faker",
 ]
 
 [build-system]
@@ -56,7 +56,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
 requires-poetry = ">=2.0"
-packages = [{ include = "integration_template" }]
+packages = [{ include = "majordom_esphome" }]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -71,14 +71,7 @@ line-length = 120
 indent-width = 4
 
 [tool.ruff.lint]
-select = [
-    "E",   # pycodestyle
-    "F",   # pyflakes
-    "UP",  # pyupgrade
-    "B",   # flake8-bugbear
-    "SIM", # flake8-simplify
-    "I",   # isort
-]
+select = ["E", "F", "UP", "B", "SIM", "I"]
 fixable = ["ALL"]
 
 [tool.ruff.format]
@@ -94,7 +87,7 @@ docstring-code-format = true
 [tool.poe.tasks.install]
 shell = """
 poetry install
-echo '#!/bin/sh\npoetry run poe check' > .git/hooks/pre-commit
+echo '#!/bin/sh\\npoetry run poe check' > .git/hooks/pre-commit
 chmod +x .git/hooks/pre-commit
 echo "Pre-commit hook installed."
 """
@@ -103,22 +96,22 @@ echo "Pre-commit hook installed."
 shell = """
 code=0
 
-echo "\nRunning ruff lint:"
+echo "\\nRunning ruff lint:"
 poetry run ruff check --fix || code=1
 
-echo "\nRunning ruff format:"
+echo "\\nRunning ruff format:"
 poetry run ruff format || code=1
 
-echo "\nRunning ty:"
+echo "\\nRunning ty:"
 poetry run ty check || code=1
 
-echo "\nRunning pytest:"
-poetry run pytest --cov=integration_template --cov-report=xml || code=1
+echo "\\nRunning pytest:"
+poetry run pytest --cov=majordom_esphome --cov-report=xml || code=1
 
-echo "\nRunning poetry build:"
+echo "\\nRunning poetry build:"
 poetry build || code=1
 
-echo "\nRunning poetry check:"
+echo "\\nRunning poetry check:"
 poetry check || code=1
 
 ${ci:+git diff --exit-code}
