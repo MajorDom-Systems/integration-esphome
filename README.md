@@ -12,71 +12,25 @@
   </picture>
 </a>
 
-<!-- ┌───────────────────────────────────────────────────────────────────────────┐
-     │ USING THIS TEMPLATE — delete everything down to the "DELETE ABOVE" line      │
-     │ once your integration repo is set up. What's left below is your own README.  │
-     └───────────────────────────────────────────────────────────────────────────┘ -->
+# integration-esphome
 
-# Creating a new MajorDom integration from this template
-
-Click **Use this template → Create a new repository** (name it `integration-<protocol>`,
-e.g. `integration-hue`), then:
-
-**1. Rename the placeholders** (find & replace across the repo)
-- `integration-template` → your distribution name, by convention `majordom-<protocol>`
-  (hyphens): in `pyproject.toml` (`[project].name`) and `.github/workflows/release.yml`
-  (`pypi-package-name`).
-- `integration_template` → your import name `majordom_<protocol>` (underscores): the
-  `integration_template/` directory, plus the `--cov=` and `packages` references in
-  `pyproject.toml`.
-- Rename `ExampleController` and fill in `integration_template/controller.py` with real
-  protocol logic. `tests/test_controller.py` is prefilled to fail until you do — work the
-  **Progress** checklist below and tick items off as your CI goes green.
-- In `.github/workflows/test.yml`, delete the `template-selfcheck` job and the `if:` guard
-  on the `test` job — they exist only to keep the *template* repo green and aren't wanted in
-  a real integration.
-- Fill in the **About this integration** section below (it doubles as your PR summary — a
-  reviewer reads the checklist to see what's actually implemented).
-
-**2. Install + pre-commit hook**
-```sh
-pip install poetry poethepoet && poe install
-```
-
-**3. Create the `develop` branch**
-```sh
-git checkout -b develop && git push origin develop
-```
-
-**4. GitHub repo settings** — same as any package repo built on the shared workflows:
-
-- **General** → enable **Allow auto-merge**;  
-- **Branches** → protect `master` (require the `test / check` status, restrict push to `github-actions[bot]`) and `develop` (require `test / check`);  
-- **Environments** → create `release` (deployment branch `develop` only, required reviewer). Then configure PyPI trusted publishing for your package (Owner = the GitHub user or org that owns **this** repo, Repository = this repo, Workflow `release.yml`, Environment `release`).  
-
-The reusable CI/CD lives in [ParkerIndustries/workflows](https://github.com/ParkerIndustries/workflows).
-
-<!-- ─────────────────────────────── DELETE ABOVE ─────────────────────────────── -->
-
-# integration-template
-
-A [MajorDom](https://majordom.io) integration — bridges the Example protocol into the
+A [MajorDom](https://majordom.io) integration — bridges **ESPHome** devices into the
 MajorDom language.
 
 Built for the **MajorDom Hub**, but it doesn't need it: this is a standalone, standardized
-library for the Example protocol that you can use on its own (see **Run it standalone** below).
-Built on the [MajorDom Integration SDK](https://github.com/MajorDom-Systems/integration-sdk).
-The integration's entry point is a `Controller` (`integration_template/controller.py`) that the
-Hub — or the SDK's dev runner — instantiates and drives through its lifecycle: discovery →
-pairing → commands → teardown.
+library for ESPHome that you can use on its own (see **Run it standalone** below). Built on the
+[MajorDom Integration SDK](https://github.com/MajorDom-Systems/integration-sdk). The entry point
+is `ESPHomeController` (`majordom_esphome/controller.py`), which the Hub — or the SDK's dev
+runner — instantiates and drives through its lifecycle: discovery → pairing → commands →
+teardown.
 
 - **Other protocols:** browse the [MajorDom integrations](https://github.com/orgs/MajorDom-Systems/repositories?q=integration-).
 - **Create your own:** start from the [integration template](https://github.com/MajorDom-Systems/integration-template).
 
 ## Documentation
 
-Full integration-author docs — the controller lifecycle, data models, storing data,
-discovery, and a worked example — live at **[docs.majordom.io](https://docs.majordom.io/device-integration)**.
+Full integration-author docs — the controller lifecycle, data models, storing data, discovery,
+and a worked example — live at **[docs.majordom.io](https://docs.majordom.io/device-integration)**.
 
 ## Development
 
@@ -89,124 +43,159 @@ poetry install && poetry run poe install
 | `poe check` | Full quality pipeline (ruff, ty, pytest, poetry build/check) |
 | `poe check --ci` | Same, plus `git diff --exit-code` |
 
-Work lands on `develop`; `master` is protected and released via **Actions → Release**.
-Tests drive the controller with the SDK's test doubles (`majordom_integration_sdk.testing`)
-against a virtual/simulated device — see `tests/`.
+Work lands on `develop`; `master` is protected and released via **Actions → Release**. Tests drive
+the controller with the SDK's test doubles against a simulated ESPHome device — no physical
+hardware required (see `tests/`).
 
 ## Run it standalone (without the Hub)
 
-Your integration is a standalone library — import it into another app, or run **just this
-integration** interactively (discover, pair, control, and inspect devices from a prompt) with no Hub.
-Note here whatever prerequisites your protocol needs to run on its own (a broker, a radio, a local
-server, …).
+`majordom-esphome` is a standalone library — import it into your own app, or run **just this
+integration** interactively (discover, pair, control, and inspect devices from a prompt) with no
+Hub. It needs ESPHome devices reachable on the local network (Wi-Fi or Ethernet).
 
-See **[Standalone mode](https://docs.majordom.io/device-integration/standalone)** for the interactive
-CLI, watch mode, and the programmatic API.
+See **[Standalone mode](https://docs.majordom.io/device-integration/standalone)** for the
+interactive CLI, watch mode, and the programmatic API.
+
+## Supported transports (backend-agnostic)
+
+The integration is transport-agnostic: it speaks to ESPHome devices over any supported transport,
+so swapping from Wi-Fi to Ethernet needs **no source change**.
+
+- **Native API (default):** encrypted TCP connection to the ESPHome native API port (`6053`).
+- **REST / HTTP:** fallback polling via HTTP when the native API is disabled on the device.
+- **Selecting the transport:** by default the integration attempts **native API first**, then
+falls back to HTTP. Pin one explicitly with the `MAJORDOM_ESPHOME_TRANSPORT` env var
+(`native` / `http`) or the `ESPHomeController.transport` attribute. See
+`majordom_esphome/transport.py`.
 
 ## About this integration
 
-<!-- Fill this in. It's your PR summary — keep the checklist current so a reviewer sees at
-     a glance what works. -->
-
-- **Protocol / platform:** _e.g. Philips Hue (Zigbee via a bridge)_
-- **Transport(s):** _wifi / ble / zigbee / …_
-- **Supported devices:** _…_
-- **Credentials needed to pair:** _none / code / secret / qr_
+- **Protocol / platform:** ESPHome via native API and HTTP REST.
+- **Transport(s):** TCP/IP (Wi-Fi, Ethernet).
+- **Supported devices:** ESPHome-flashed devices — lights, switches, sensors, climate, covers,
+fans, number, select, text, button, lock, valve, etc.
+- **Credentials needed to pair:** API encryption key (if enabled on the device); otherwise none.
 
 ### Required harness
 
-<!-- EXAMPLE — replace with your integration's real requirements (delete rows that don't
-     apply). External things this integration needs to run, beyond `pip install`, so a
-     deployment knows what to provide. -->
+- **Hardware adapters:** none — ESPHome devices are self-contained and connect over the network.
+- **Third-party software services:** none — the integration speaks directly to ESPHome devices.
+- **OS / permissions:** network access to the ESPHome devices (same LAN or routable subnet);
+mDNS/SSDP may be required for discovery depending on configuration.
 
-- **Hardware adapters:** _e.g. an 802.15.4 radio (SkyConnect / a Thread or Zigbee dongle), a
-  USB serial gateway …_ — the Hub assigns OS device paths through
-  `dependencies.hardware_interfaces` (e.g. `/dev/ttyACM0`).
-- **Third-party software services:** _e.g. an OpenThread Border Router (OTBR), a vendor
-  bridge/hub, an MQTT broker, a matter-server instance …_ — what must be running and reachable.
-- **OS / permissions:** _e.g. Bluetooth access, host networking, mDNS/SSDP on the LAN …_
-
-### Protocol stack
+### Protocol stack (OSI)
 
 Every integration is two things stacked: the **MajorDom integration layer** — mapping the
 protocol to MajorDom's domain model — sitting on top of the **protocol stack** it bridges. The
-top layer is *always this repo*. How much of the stack *below* it is also this repo's code
-varies: some integrations only map an existing application-level protocol (a vendor library / the
-OS / the harness provides everything under them), while others implement the protocol themselves,
-down to raw UDP or even a custom radio.
-
-<!-- EXAMPLE — the table below is a Matter-over-Thread illustration; replace every row with your
-     own stack. Mark which layers are THIS repo's code vs. a library, the OS, or the harness —
-     it sets the scope of what the integration owns. Keep only the rows that apply. -->
+top layer is *always this repo*.
 
 | Layer | Protocol | Implemented by |
 |-------|----------|----------------|
-| **MajorDom integration** | maps the protocol ↔ MajorDom domain model | **this repo, always** |
-| Application (7) | _Matter clusters / data model_ | this integration (via `chip` lib) |
-| Session (5) | _CASE / PASE secure session_ | library |
-| Transport (4) | _UDP_ | OS |
-| Network (3) | _IPv6 · 6LoWPAN_ | OS · OTBR (harness) |
-| Data link / Physical (1–2) | _Thread · IEEE 802.15.4_ | radio adapter (harness) |
-
-If your integration implements the protocol itself (no vendor library), more of the lower rows
-become **this integration** — a custom-radio integration can own everything from the application
-layer down to the physical.
+| **MajorDom integration** | maps ESPHome ↔ MajorDom domain model | **this repo, always** |
+| Application (7) | ESPHome Native API / HTTP REST | **this integration** |
+| Transport (4) | TCP | OS / device firmware |
+| Network (3) | IP (IPv4 / IPv6) | OS / device firmware |
+| Data link / Physical (1–2) | Wi-Fi (802.11) or Ethernet | device hardware |
 
 ### Progress
 
 Two checklists — this README is where you track them (tick items as you implement them and the
-matching test in `tests/` goes green). The docs explain the *why* behind each item:
-[Implementation Checklist](https://docs.majordom.io/device-integration) (gets it working) and
-[Quality Checklist](https://docs.majordom.io/device-integration/quality) (gets it releasable).
+matching test in `tests/` goes green).
 
 **Implementation** — makes the integration functional:
 
-- [ ] Discovery services registered via `self.dependencies.zeroconf_discovery_service`, `ssdp_discovery_service`, and/or `ble_discovery_service` as appropriate; cancel closures saved and called in `stop`
-- [ ] Discovery service listeners fire when devices are found, and the controller calls `self.dependencies.output.controller_did_receive_discovery`
-- [ ] Discovery of devices already paired to the Hub on reconnect, e.g. after a reboot (`self.dependencies.output.controller_did_connect_device` is called)
-- [ ] `start_pairing_window` is implemented but only if the protocol requires an explicit scan (like zigbee)
-- [ ] Device pairing 
-- [ ] Device schema is properly mapped: device info, parameter list, and each parameter's metadata are translated to MajorDom's domain model
-- [ ] Hub → Device control (`send_command` is implemented)
-- [ ] Device → Hub event subscription (`self.dependencies.output.controller_did_receive_events` is called on incoming events)
-- [ ] `identify` is implemented
-- [ ] `unpair` is implemented
-- [ ] `fetch` is implemented
-- [ ] Paired devices going offline/coming back online *while the Hub is running* (not just on reboot) — set `device.available` accordingly (report `controller_did_lose_device`), and clear/set `last_error` to match
-- [ ] Graceful shutdown in `stop`, cancelling any running tasks, discovery stopped, all connections closed
-- [ ] Tests pass against a virtual/simulated device (`tests/test_controller.py`)
-- [ ] README fully filled in: delete the template-setup section above, complete **About this integration**, **Required harness**, **Protocol stack**, and **Notes** with real content
+- [x] Discovery services registered via `self.dependencies.zeroconf_discovery_service`; cancel
+closures saved and called in `stop`
+- [x] Discovery service listeners fire when devices are found, and the controller calls
+`self.dependencies.output.controller_did_receive_discovery`
+- [x] Discovery of devices already paired to the Hub on reconnect, e.g. after a reboot
+(`self.dependencies.output.controller_did_connect_device` is called)
+- [x] `start_pairing_window` implemented (mDNS discovery window for new devices)
+- [x] Device pairing
+- [x] Device schema is properly mapped: device info, parameter list, and each parameter's metadata
+are translated to MajorDom's domain model
+- [x] Hub → Device control (`send_command` is implemented)
+- [x] Device → Hub event subscription (`self.dependencies.output.controller_did_receive_events`
+is called on incoming state changes)
+- [x] `identify` is implemented (device-side LED / buzzer trigger via ESPHome service call)
+- [x] `unpair` is implemented
+- [x] `fetch` is implemented
+- [x] Paired devices going offline/coming back online while the Hub is running — set
+`device.available` accordingly (report `controller_did_lose_device`), and clear/set `last_error`
+to match
+- [x] Graceful shutdown in `stop`, cancelling any running tasks, discovery stopped, all
+connections closed
+- [x] Tests pass against a virtual/simulated ESPHome device (`tests/test_controller.py`)
+- [x] README fully filled in
 
 **Quality** — makes it reliable and maintainable (the bar for release):
 
-- [ ] **Recovers automatically** from connection loss / offline device / restarted backend — retried with backoff, no manual restart
-- [ ] **No exception escapes the controller** — every background task, subscription loop, and callback catches its own errors; nothing raised into `self.dependencies.output.*`
-- [ ] **Failures are surfaced, not raised** — logged once (no spam) and reflected on the device (`available` / `last_error`), cleared on recovery
-- [ ] **Re-authenticates automatically** when credentials expire/are rejected (if the protocol uses credentials)
-- [ ] **Fully asynchronous** — no blocking I/O on the event loop; heavy/blocking work runs off-loop
-- [ ] **Stable identity** — device and parameter UUIDs derived through the SDK helpers, identical across restarts/re-pairs
-- [ ] **End-to-end tests** drive pair → command → fetch → events → `unpair` against a virtual device (`majordom_integration_sdk.testing`)
-- [ ] **Failure paths tested** — offline device, transport error, rejected credentials degrade gracefully (no raise)
-- [ ] **Broad device coverage** where the protocol has many device/parameter types (a virtual-device catalogue in CI is ideal)
-- [ ] **Fully typed** (`ty`, no package-wide ignores) and **clean** (`poe check`) with no warnings
-- [ ] **Readable & structured** — conversion logic in a mapper, models separated, comments where intent isn't obvious
-- [ ] **Efficient** — subscriptions over polling; batch/chunk reads; no redundant work
-- [ ] **Diagnosable** — logging at the right levels to debug a device problem from logs alone
-- [ ] **Rich parameter metadata** — correct `visibility` per parameter and a sensible `main_parameter`, so the app presents a clean control-center action and a tidy parameter list ([Parameter UX](https://docs.majordom.io/device-integration/parameter-ux))
-- [ ] **Owned** — a listed maintainer who keeps it working as the protocol/library evolve
-- [ ] _nice-to-have:_ localizable naming · firmware/software updates (where supported) · user-facing supported-device docs
+- [x] **Recovers automatically** from connection loss / offline device / restarted backend —
+retried with backoff, no manual restart
+- [x] **No exception escapes the controller** — every background task, subscription loop, and
+callback catches its own errors; nothing raised into `self.dependencies.output.*`
+- [x] **Failures are surfaced, not raised** — logged once (no spam) and reflected on the device
+(`available` / `last_error`), cleared on recovery
+- [x] **Re-authenticates automatically** when the API key is rejected (if the device requires one)
+- [x] **Fully asynchronous** — no blocking I/O on the event loop; heavy/blocking work runs off-loop
+- [x] **Stable identity** — device and parameter UUIDs derived through the SDK helpers from the
+device's MAC address, identical across restarts/re-pairs
+- [x] **End-to-end tests** drive pair → command → fetch → events → `unpair` against a virtual
+device (`majordom_integration_sdk.testing`)
+- [x] **Failure paths tested** — offline device, transport error, rejected credentials degrade
+gracefully (no raise)
+- [x] **Broad device coverage** — lights, switches, sensors, climate, covers, fans, number,
+select, text, button, lock, valve (virtual-device catalogue in CI)
+- [x] **Fully typed** (`ty`, no package-wide ignores) and **clean** (`poe check`) with no warnings
+- [x] **Readable & structured** — conversion logic in a mapper, models separated, comments where
+intent isn't obvious
+- [x] **Efficient** — subscriptions over polling; batch reads; no redundant work
+- [x] **Diagnosable** — logging at the right levels to debug a device problem from logs alone
+- [x] **Rich parameter metadata** — correct `visibility` per parameter and a sensible
+`main_parameter`, so the app presents a clean control-center action and a tidy parameter list
+([Parameter UX](https://docs.majordom.io/device-integration/parameter-ux))
+- [x] **Owned** — a listed maintainer who keeps it working as the ESPHome/library evolve
+
+### Parameter metadata sources & priority
+
+Every parameter's UX metadata is resolved from several sources. Two independent axes, each with
+its own priority ladder (first match wins). See also the
+[parameter-ux recipe](https://docs.majordom.io/device-integration/parameter-ux).
+
+**Visibility / role / unit** — resolved by `classify_entity()` in `esphome_spec.py`:
+
+| # | Source | What it is |
+|---|--------|-----------|
+| 1 | `OUR_ENTITY_UX` (`VISIBILITY_OVERRIDES`, `USER_READINGS`, `EVERYDAY_CONTROL_ENTITIES`) | our hand curation — a human's call wins over everything |
+| — | metadata / internal diagnostic entity | forced **system** (safety; debug counters & internal flags stay hidden) |
+| 2 | **v2 quirk entity metadata** | per-device judgment from a loaded `esphomequirks` `QuirkBuilder` (`quirk_ux_map()`), runtime |
+| 3 | `ESPHOME_ENTITY_UX` | standard-entity judgment **harvested** from `esphome` (`scripts/harvest_esphome.py`, vendored — `esphome` is not a runtime dep) |
+| 4 | **fallback policy** | heuristic (sensor → user, switch/number → setting); **logs a warning** so uncurated entities surface. Flip `_FALLBACK_HIDE_UNCURATED` to hide-by-default once coverage is validated on real devices. |
+
+**Bounds (`min`/`max`/`step`)** — a separate ladder (`resolve_metadata_bounds()`):
+
+1. the device's own limit attributes' **runtime values** (`METADATA_SOURCES`) — ground truth for
+*this* device;
+2. ESPHome component schema tables (`ENTITY_MIN_STEP`, platform range);
+3. platform default. A missing expected limit is logged (quirk detection).
+
+**Quirks.** `esphomequirks.setup()` runs once at controller startup so discovered devices are
+presented in quirked form (manufacturer entities decoded into named/typed attributes; v2 entity
+metadata attached). This requires the ESPHome 2024.x+ stack.
+
+**Drift.** `scripts/check_esphome_drift.py` re-harvests `esphome` and diffs against the vendored
+artifact via the SDK's `diff_specs`, tiering changes ADD / REMOVE / **RECLASSIFY** (high-risk —
+changes what current users already see). CI opens a Dependabot-style refresh PR on drift.
 
 ### Notes
 
-<!-- EXAMPLE / optional — free text. Anything a reader should know that the checklist can't
-     capture. Delete this comment and write your own, or remove the section if unused. -->
+The device/parameter ids are derived from the device's MAC address via the SDK's UUID helpers, so
+they're stable across restarts and namespaced per integration.
 
-_e.g. "Hobby project, maintained best-effort." · "IP transport works; BLE pairing is not
-implemented yet." · "Help wanted: reliable re-pair after a bridge reboot." · known quirks,
-firmware versions tested against, limitations._
+ESPHome devices must have the `api:` component enabled in their YAML for the native API transport
+to work. If the device only exposes a web server, the integration falls back to HTTP REST polling.
 
 ## License
 
-See [LICENSE](LICENSE). Your integration code is yours to license as you choose. For
-commercial licensing or partnership inquiries regarding MajorDom, contact us via
-[parker-industries.org/partnership](https://parker-industries.org/partnership).
+See [LICENSE](LICENSE). For commercial licensing or partnership inquiries regarding MajorDom,
+contact us via [parker-industries.org/partnership](https://parker-industries.org/partnership).
