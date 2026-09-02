@@ -1,0 +1,19 @@
+name: Dependabot Auto-merge
+
+on:
+  pull_request:
+    branches:
+      - develop
+  workflow_dispatch:
+
+# Dependabot-triggered pull_request events get a read-only GITHUB_TOKEN by default.
+# These permissions must be granted here, in the directly-triggered workflow — a called
+# (reusable) workflow can only narrow them, never elevate. Without this, gh pr merge --auto
+# fails on real Dependabot PRs. (Also requires Settings -> General -> Allow auto-merge.)
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  dependabot:
+    uses: ParkerIndustries/workflows/.github/workflows/dependabot-automerge.yml@v1
