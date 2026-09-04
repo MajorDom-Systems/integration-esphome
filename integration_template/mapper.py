@@ -1,8 +1,8 @@
-from typing import Any, Optional, List, Tuple
+from typing import Any
 
-from majordom_hub.schemas.parameter import ParameterRole, ParameterDataType
+from majordom_integration_sdk.schemas.parameter import ParameterDataType, ParameterRole
+
 from .models import ESPhomeComponentType, ESPhomeParameterType
-
 
 COMPONENT_TO_DATATYPE = {
     ESPhomeComponentType.LIGHT: ParameterDataType.string,
@@ -46,8 +46,7 @@ COMPONENT_TO_PARAMETER_TYPE = {
     ESPhomeComponentType.TEXT_SENSOR: ESPhomeParameterType.SENSOR,
 }
 
-# Composite components broken into individual parameters (cluster-like)
-COMPONENT_SUB_FIELDS: dict[ESPhomeComponentType, List[Tuple[str, ParameterDataType, ParameterRole]]] = {
+COMPONENT_SUB_FIELDS: dict[ESPhomeComponentType, list[tuple[str, ParameterDataType, ParameterRole]]] = {
     ESPhomeComponentType.LIGHT: [
         ("state", ParameterDataType.bool, ParameterRole.control),
         ("brightness", ParameterDataType.decimal, ParameterRole.control),
@@ -70,14 +69,12 @@ COMPONENT_SUB_FIELDS: dict[ESPhomeComponentType, List[Tuple[str, ParameterDataTy
 }
 
 
-def get_sub_fields(component_type: ESPhomeComponentType) -> List[Tuple[str, ParameterDataType, ParameterRole]]:
-    """Return sub-fields for composite components, or empty list for simple ones."""
+def get_sub_fields(component_type: ESPhomeComponentType) -> list[tuple[str, ParameterDataType, ParameterRole]]:
     return COMPONENT_SUB_FIELDS.get(component_type, [])
 
 
-def convert_entity_state(state_obj: Any, component_type: str) -> List[Tuple[str, Any]]:
-    """Convert entity state into list of (sub_field, value) tuples."""
-    result: List[Tuple[str, Any]] = []
+def convert_entity_state(state_obj: Any, component_type: str) -> list[tuple[str, Any]]:
+    result: list[tuple[str, Any]] = []
 
     if component_type == "switch":
         result.append(("state", state_obj.state))
@@ -114,11 +111,10 @@ def convert_entity_state(state_obj: Any, component_type: str) -> List[Tuple[str,
 def build_command_args(
     component_type: str,
     entity_key: int,
-    sub_field: Optional[str],
+    sub_field: str | None,
     value: Any,
     current_state: dict[str, Any],
 ) -> dict:
-    """Build command args for ESPHome API."""
     kwargs: dict[str, Any] = {"key": entity_key}
 
     if component_type == "switch":
@@ -129,7 +125,6 @@ def build_command_args(
         elif sub_field == "brightness":
             kwargs["brightness"] = float(value)
         elif sub_field in ("color_r", "color_g", "color_b"):
-            # Send all color channels, using cached values for unchanged ones
             r = value if sub_field == "color_r" else current_state.get("color_r", 0)
             g = value if sub_field == "color_g" else current_state.get("color_g", 0)
             b = value if sub_field == "color_b" else current_state.get("color_b", 0)
@@ -162,7 +157,7 @@ def build_command_args(
     elif component_type == "select":
         kwargs["state"] = str(value)
     elif component_type == "button":
-        pass  # No value needed
+        pass
     elif component_type == "fan":
         if sub_field == "state":
             kwargs["state"] = bool(value)

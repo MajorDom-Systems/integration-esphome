@@ -1,32 +1,24 @@
-"""Integration tests for ESPHome controller.
+"""Integration tests for ESPHome controller."""
 
-These tests verify that the controller correctly handles:
-- pairing, fetching state, sending commands, identifying, unpairing,
-- and receiving asynchronous state updates from the device.
-"""
-
-import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
-from uuid import UUID, uuid5, NAMESPACE_DNS
+from uuid import NAMESPACE_DNS, UUID, uuid5
 
 import pytest
 import pytest_asyncio
-
+from majordom_integration_sdk.schemas.command import DeviceCommand
+from majordom_integration_sdk.schemas.device import Discovery
+from majordom_integration_sdk.schemas.parameter import ParameterDataType, ParameterRole, ParameterVisibility
 from majordom_integration_sdk.testing import build_test_dependencies
-from majordom_hub.schemas.command import DeviceCommand
-from majordom_hub.schemas.device import Discovery, CredentialsValue
-from majordom_hub.schemas.parameter import ParameterDataType, ParameterRole, ParameterVisibility
 
-from majordom_hub.services.controller.esphome.controller import ESPhomeController
-from majordom_hub.services.controller.esphome.models import (
+from integration_template.controller import ESPhomeController
+from integration_template.models import (
+    ESPhomeComponentType,
     ESPhomeDevice,
     ESPhomeDeviceIntegrationData,
     ESPhomeParameter,
     ESPhomeParameterIntegrationData,
-    ESPhomeComponentType,
     ESPhomeParameterType,
 )
-
 
 
 @pytest.fixture
@@ -44,9 +36,7 @@ async def controller(deps):
 
 @pytest.fixture
 def mock_connection():
-    with patch(
-        "majordom_hub.services.controller.esphome.controller.ESPhomeDeviceConnection"
-    ) as MockConn:
+    with patch("integration_template.connection.ESPhomeDeviceConnection") as MockConn:
         instance = MagicMock()
         instance.start = AsyncMock()
         instance.stop = AsyncMock()
@@ -67,23 +57,23 @@ def fake_entity():
         for k, v in kwargs.items():
             setattr(ent, k, v)
         return ent
+
     return _make
 
 
 @pytest.fixture
 def sample_discovery():
     device_id = uuid5(NAMESPACE_DNS, "esphome_device_test_123")
-    discovery = MagicMock(spec=Discovery)
-    discovery.id = device_id
-    discovery.name = "test_device.local."
-    discovery.integration = "esphome"
-    discovery.credentials = "none"
-    discovery.transport = "tcp"
-    discovery.device_manufacturer = "esphome"
-    discovery.device_name = "test_device"
-    discovery.device_category = "light"
-    discovery.device_icon = ""
-    discovery.integration_data = {"address": "127.0.0.1", "port": 6053, "requires_encryption": False}
+    discovery = Discovery(
+        id=device_id,
+        integration="esphome",
+        transport="tcp",
+        device_manufacturer="esphome",
+        device_name="test_device",
+        device_category="light",
+        device_icon="",
+        expected_credentials_options=[],
+    )
     return discovery
 
 
@@ -112,7 +102,6 @@ async def paired_device(controller, deps):
     return device
 
 
-
 @pytest.mark.asyncio
 async def test_pairs_a_discovered_device(
     controller: ESPhomeController,
@@ -125,6 +114,7 @@ async def test_pairs_a_discovered_device(
     device_id = discovery.id
 
     controller._discoveries[device_id] = discovery
+    controller._discovery_data[device_id] = {"address": "127.0.0.1", "port": 6053, "requires_encryption": False}
 
     mock_cls, mock_inst = mock_connection
     ent1 = fake_entity(key=1, name="switch1", component_type="switch")
@@ -146,7 +136,6 @@ async def test_pairs_a_discovered_device(
     mock_inst.wait_ready.assert_awaited_once()
 
     assert device_id not in controller._discoveries
-
 
 
 @pytest.mark.asyncio
@@ -179,7 +168,6 @@ async def test_fetches_state(
 
     cache = controller._state_cache.get(device_id, {})
     assert cache.get("switch1_state") is True
-
 
 
 @pytest.mark.asyncio
@@ -234,7 +222,6 @@ async def test_sends_a_command(
     assert command_args == {"key": 1, "state": True}
 
 
-
 @pytest.mark.asyncio
 async def test_identifies(
     controller: ESPhomeController,
@@ -242,8 +229,6 @@ async def test_identifies(
 ):
     device = paired_device
     await controller.identify(device)
-
-
 
 
 @pytest.mark.asyncio
@@ -273,7 +258,6 @@ async def test_unpairs(
     assert device_id not in controller._state_cache
 
 
-
 @pytest.mark.asyncio
 async def test_incoming_events_from_device(
     controller: ESPhomeController,
@@ -281,11 +265,6 @@ async def test_incoming_events_from_device(
     paired_device,
     mock_connection,
 ):
-    """
-    Test that the controller correctly handles incoming state updates from the device.
-    Simulates a real device sending a state change (e.g., someone manually turned on a light).
-    Checks that the event is propagated to the Hub via deps.output.events.
-    """
     device = paired_device
     device_id = device.id
 
@@ -294,8 +273,7 @@ async def test_incoming_events_from_device(
         controller._connections[device_id] = mock_inst
 
     state_obj = MagicMock()
-    state_obj.state = True  
-
+    state_obj.state = True
 
     await controller._on_state(
         device_id=device_id,
@@ -304,9 +282,8 @@ async def test_incoming_events_from_device(
         state_obj=state_obj,
     )
 
-   
     assert len(deps.output.events) >= 1, "No events received from device"
-    event = deps.output.events[-1]  
+    event = deps.output.events[-1]
     assert event.device_id == device_id
     assert event.value is True
 

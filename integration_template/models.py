@@ -1,10 +1,8 @@
-from pydantic import BaseModel, Field
 from enum import Enum
-from typing import Optional, Any, List
-from uuid import UUID
+from typing import Any
 
-from majordom_hub.schemas.device import Device, Parameter, ParameterState
-from majordom_hub.schemas.base import Base
+from majordom_integration_sdk.schemas.device import Device, Parameter, ParameterState
+from pydantic import BaseModel, Field
 
 
 class ESPhomeParameterType(str, Enum):
@@ -29,7 +27,7 @@ class ESPhomeComponentType(str, Enum):
     TEXT_SENSOR = "text_sensor"
 
 
-class ESPhomeDeviceIntegrationData(Base):
+class ESPhomeDeviceIntegrationData(BaseModel):
     device_name: str | None = None
     unique_id: str | None = None
     address: str | None = None
@@ -43,12 +41,12 @@ class ESPhomeParameterIntegrationData(BaseModel):
     component_type: ESPhomeComponentType
     parameter_type: ESPhomeParameterType
     service_key: int | None = None
-    sub_field: str | None = None  
+    sub_field: str | None = None
 
 
 class ESPhomeDevice(Device):
     integration_data: ESPhomeDeviceIntegrationData
-    parameters: list["ESPhomeParameter"] = Field(default_factory=list) 
+    parameters: list["ESPhomeParameter"] = Field(default_factory=list)
 
 
 class ESPhomeParameter(Parameter):

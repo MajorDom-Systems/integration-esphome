@@ -1,21 +1,24 @@
-"""ESPHome integration controller for MajorDom Hub."""
+"""ESPHome integration controller for MajorDom."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Optional
-from uuid import UUID, NAMESPACE_DNS, uuid5
+from typing import Any
+from uuid import NAMESPACE_DNS, UUID, uuid5
 
 from majordom_integration_sdk.controller import AbstractController
-from majordom_hub.schemas.automation.events import DeviceParameterChangedEvent
-from majordom_hub.schemas.command import DeviceCommand
-from majordom_hub.schemas.device import CredentialsValue, Discovery
-from majordom_hub.schemas.parameter import ParameterDataType, ParameterRole, ParameterVisibility
+from majordom_integration_sdk.schemas import (
+    DeviceParameterChange,
+    ProvidedCredentials,
+)
+from majordom_integration_sdk.schemas.command import DeviceCommand
+from majordom_integration_sdk.schemas.device import Discovery
+from majordom_integration_sdk.schemas.parameter import ParameterDataType, ParameterRole, ParameterVisibility
 
-from .connection import ESPhomeDeviceConnection
-from .esphome_spec import get_max_value, get_min_step, get_min_value, get_unit
 from . import mapper
+from .connection import ESPhomeDeviceConnection
+from .esphome_spec import get_max_value, get_min_value, get_unit
 from .models import (
     ESPhomeComponentType,
     ESPhomeDevice,
@@ -29,19 +32,16 @@ logger = logging.getLogger(__name__)
 
 
 class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
-    """ESPHome integration controller."""
+    name = "esphome"
 
     def __init__(self, dependencies: AbstractController.Dependencies) -> None:
         super().__init__(dependencies)
         self._connections: dict[UUID, ESPhomeDeviceConnection] = {}
         self._discoveries: dict[UUID, Discovery] = {}
-        self._zeroconf_cancel: Optional[Any] = None
+        self._discovery_data: dict[UUID, dict] = {}
+        self._zeroconf_cancel: Any | None = None
         self._lock = asyncio.Lock()
         self._state_cache: dict[UUID, dict[str, Any]] = {}
-
-    @property
-    def name(self) -> str:
-        return "esphome"
 
     @property
     def discoveries(self) -> dict[UUID, Discovery]:
@@ -55,11 +55,19 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
     def parameter_type(self) -> type[ESPhomeParameter]:
         return ESPhomeParameter
 
-
     async def start(self) -> None:
         logger.info("Starting ESPHome integration")
+
+        class _Listener:
+            def __init__(self, callback):
+                self.callback = callback
+
+            def zeroconf_did_discover_service(self, info):
+                asyncio.create_task(self.callback(info))
+
+        listener = _Listener(self._on_zeroconf_service)
         self._zeroconf_cancel = self.dependencies.zeroconf_discovery_service.register(
-            listener=self._on_zeroconf_service,
+            listener=listener,  # type: ignore
             services={"_esphomelib._tcp.local."},
         )
         await self._load_paired_devices()
@@ -74,8 +82,6 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
             for conn in list(self._connections.values()):
                 await conn.stop()
             self._connections.clear()
-
-
 
     async def _on_zeroconf_service(self, service_info: Any) -> None:
         try:
@@ -96,23 +102,24 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
             has_encryption = bool(properties.get(b"encryption"))
             discovery = Discovery(
                 id=device_id,
-                name=name,
                 integration=self.name,
-                integration_data={"address": address, "port": port, "requires_encryption": has_encryption},
-                credentials="none",
                 transport="tcp",
                 device_manufacturer="esphome",
                 device_name=name,
                 device_category="light",
                 device_icon="",
+                expected_credentials_options=[],
             )
+            self._discovery_data[device_id] = {
+                "address": address,
+                "port": port,
+                "requires_encryption": has_encryption,
+            }
             self._discoveries[device_id] = discovery
             await self.dependencies.output.controller_did_receive_discovery(self, discovery)
             logger.debug("Discovered ESPHome device: %s at %s:%s", name, address, port)
         except Exception:
             logger.exception("Error handling zeroconf discovery")
-
-
 
     async def _load_paired_devices(self) -> None:
         async with self.dependencies.make_device_repository() as repo:
@@ -127,6 +134,10 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
                 return
 
             data = device.integration_data
+            if data.address is None:
+                logger.error("Device %s has no address, skipping", device.id)
+                return
+
             conn = ESPhomeDeviceConnection(
                 device_id=device.id,
                 address=data.address,
@@ -160,7 +171,6 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
         if conn:
             await conn.stop()
 
-
     async def _on_state(
         self,
         device_id: UUID,
@@ -170,17 +180,15 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
     ) -> None:
         try:
             sub_values = mapper.convert_entity_state(state_obj, component_type)
-            events: list[DeviceParameterChangedEvent] = []
+            events: list[DeviceParameterChange] = []
 
             cache = self._state_cache.setdefault(device_id, {})
 
             for sub_field, value in sub_values:
-                param_id = uuid5(NAMESPACE_DNS,
-                    f"{device_id}_{entity_name}_{sub_field}"
-                )
+                param_id = uuid5(NAMESPACE_DNS, f"{device_id}_{entity_name}_{sub_field}")
                 cache[f"{entity_name}_{sub_field}"] = value
                 events.append(
-                    DeviceParameterChangedEvent(
+                    DeviceParameterChange(
                         device_id=device_id,
                         parameter_id=param_id,
                         value=value,
@@ -188,29 +196,28 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
                 )
 
             if events:
-                await self.dependencies.output.controller_did_receive_events(
-                    self, events
-                )
+                await self.dependencies.output.controller_did_receive_events(self, events)
         except Exception:
             logger.exception("Error handling state for %s", entity_name)
-
 
     async def pair_device(
         self,
         discovery: Discovery,
-        credentials: CredentialsValue | None,
+        credentials: ProvidedCredentials | None,
     ) -> None:
         logger.info("Pairing ESPHome device: %s", discovery.id)
 
-        encryption_key: Optional[str] = None
+        encryption_key: str | None = None
         if credentials and credentials.type == "encryption_key":
             encryption_key = credentials.value
 
-        if discovery.integration_data.get("requires_encryption") and not encryption_key:
+        integration_data = self._discovery_data.get(discovery.id, {})
+        if integration_data.get("requires_encryption") and not encryption_key:
             raise ValueError("Encryption key is required for this device")
 
-        integration_data = discovery.integration_data or {}
         address = integration_data.get("address")
+        if address is None:
+            raise ValueError("Device address is required")
         port = integration_data.get("port", 6053)
 
         conn = ESPhomeDeviceConnection(
@@ -243,16 +250,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
 
                 if sub_fields:
                     for sub_field, data_type, role in sub_fields:
-                        param_id = uuid5(NAMESPACE_DNS,
-                            f"{discovery.id}_{entity.name}_{sub_field}"
-                        )
-
-                        enum_values = None
-                        if comp_enum == ESPhomeComponentType.SELECT and sub_field == "state" and hasattr(entity, "options"):
-                            enum_values = list(entity.options)
-                        elif comp_enum == ESPhomeComponentType.CLIMATE and sub_field == "mode" and hasattr(entity, "modes"):
-                            enum_values = list(entity.modes)
-
+                        param_id = uuid5(NAMESPACE_DNS, f"{discovery.id}_{entity.name}_{sub_field}")
                         is_number_value = comp_enum == ESPhomeComponentType.NUMBER and sub_field == "state"
 
                         param = ESPhomeParameter(
@@ -263,8 +261,6 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
                             unit=get_unit(component_type_str, getattr(entity, "device_class", None)),
                             min_value=get_min_value(component_type_str) if is_number_value else None,
                             max_value=get_max_value(component_type_str) if is_number_value else None,
-                            step=get_min_step(component_type_str) if is_number_value else None,
-                            enum_values=enum_values,
                             visibility=ParameterVisibility.user,
                             integration_data=ESPhomeParameterIntegrationData(
                                 entity_name=entity.name,
@@ -278,28 +274,16 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
                         )
                         parameters.append(param)
                 else:
-                    param_id = uuid5(NAMESPACE_DNS,
-                        f"{discovery.id}_{entity.name}_state"
-                    )
-
-                    enum_values = None
-                    if comp_enum == ESPhomeComponentType.SELECT and hasattr(entity, "options"):
-                        enum_values = list(entity.options)
+                    param_id = uuid5(NAMESPACE_DNS, f"{discovery.id}_{entity.name}_state")
 
                     param = ESPhomeParameter(
                         id=param_id,
                         name=entity.name,
-                        data_type=mapper.COMPONENT_TO_DATATYPE.get(
-                            comp_enum, ParameterDataType.none
-                        ),
-                        role=mapper.COMPONENT_TO_ROLE.get(
-                            comp_enum, ParameterRole.control
-                        ),
+                        data_type=mapper.COMPONENT_TO_DATATYPE.get(comp_enum, ParameterDataType.none),
+                        role=mapper.COMPONENT_TO_ROLE.get(comp_enum, ParameterRole.control),
                         unit=get_unit(component_type_str, getattr(entity, "device_class", None)),
                         min_value=get_min_value(component_type_str),
                         max_value=get_max_value(component_type_str),
-                        step=get_min_step(component_type_str),
-                        enum_values=enum_values,
                         visibility=ParameterVisibility.user,
                         integration_data=ESPhomeParameterIntegrationData(
                             entity_name=entity.name,
@@ -315,15 +299,15 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
 
             device = ESPhomeDevice(
                 id=discovery.id,
-                name=discovery.name,
+                name=discovery.device_name,
                 integration=self.name,
                 available=True,
                 parameters=parameters,
-                room_id=discovery.id,   
-                transport=getattr(discovery, 'transport', 'tcp'),
-                manufacturer=getattr(discovery, 'device_manufacturer', 'esphome'),
+                room_id=discovery.id,
+                transport=getattr(discovery, "transport", "tcp"),
+                manufacturer=getattr(discovery, "device_manufacturer", "esphome"),
                 integration_data=ESPhomeDeviceIntegrationData(
-                    device_name=discovery.name,
+                    device_name=discovery.device_name,
                     unique_id=str(discovery.id),
                     address=address,
                     port=port,
@@ -340,6 +324,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
             await self.dependencies.output.controller_did_connect_device(self, discovery.id)
 
             self._discoveries.pop(discovery.id, None)
+            self._discovery_data.pop(discovery.id, None)
 
         except Exception:
             await conn.stop()
@@ -348,7 +333,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
     async def unpair(self, device: ESPhomeDevice) -> None:
         await self._disconnect_device(device.id)
         async with self.dependencies.make_device_repository() as repo:
-            await repo.delete(device.id)
+            await repo.remove(device.id)  # type: ignore
 
     async def identify(self, device: ESPhomeDevice) -> None:
         logger.info("Identify called for %s", device.id)
@@ -357,7 +342,6 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
         conn = self._connections.get(device.id)
         if not conn:
             raise ConnectionError("Device not connected")
-  
 
     async def send_command(
         self,
@@ -370,6 +354,8 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
             raise ConnectionError("Device not connected")
 
         entity_key = parameter.integration_data.service_key
+        if entity_key is None:
+            raise ValueError("Parameter has no service_key")
         component_type = parameter.integration_data.component_type.value
         sub_field = parameter.integration_data.sub_field
 

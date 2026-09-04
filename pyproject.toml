@@ -1,5 +1,5 @@
 [project]
-name = "majordom-esphome"
+name = "integration-template"
 version = "0.1.0"
 description = "MajorDom integration for ESPHome devices."
 authors = [
@@ -21,9 +21,13 @@ classifiers = [
 requires-python = ">=3.12"
 dependencies = [
     "majordom-integration-sdk (>=0.1.5,<1.0)",
-    "aioesphomeapi (>=25.0.0,<26.0)",
+    "aioesphomeapi >=43.0.0",
     "pydantic (>=2.0.0,<3.0.0)",          
 ]
+
+[tool.poetry.dependencies]
+python = "^3.12"
+noiseprotocol = { version = ">=0.3.1,<1.0", python = ">=3.12" }
 
 [project.urls]
 Homepage = "https://majordom.io"
@@ -56,7 +60,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
 requires-poetry = ">=2.0"
-packages = [{ include = "majordom_esphome" }]
+packages = [{ include = "integration_template" }]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -106,7 +110,7 @@ echo "\\nRunning ty:"
 poetry run ty check || code=1
 
 echo "\\nRunning pytest:"
-poetry run pytest --cov=majordom_esphome --cov-report=xml || code=1
+poetry run pytest --cov=integration_template --cov-report=xml || code=1
 
 echo "\\nRunning poetry build:"
 poetry build || code=1

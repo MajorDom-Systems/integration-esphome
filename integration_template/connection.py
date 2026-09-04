@@ -1,6 +1,7 @@
 import asyncio
 import logging
-from typing import Optional, Callable, Awaitable, Any
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from aioesphomeapi import APIClient, EntityInfo, EntityState
 
@@ -13,7 +14,7 @@ class ESPhomeDeviceConnection:
         device_id: Any,
         address: str,
         port: int,
-        encryption_key: Optional[str],
+        encryption_key: str | None,
         on_state: Callable[[Any, str, str, Any], Awaitable[None]],
     ):
         self.device_id = device_id
@@ -22,14 +23,14 @@ class ESPhomeDeviceConnection:
         self.encryption_key = encryption_key
         self.on_state_callback = on_state
 
-        self._client: Optional[APIClient] = None
-        self._task: Optional[asyncio.Task] = None
+        self._client: APIClient | None = None
+        self._task: asyncio.Task | None = None
         self._entities: dict[int, EntityInfo] = {}
         self._ready = asyncio.Event()
         self._expected_disconnect = False
         self._stopped = False
         self._disconnect_event = asyncio.Event()
-        self._disconnect_event.set()  # Initially disconnected
+        self._disconnect_event.set()
 
     async def start(self):
         self._stopped = False
@@ -58,10 +59,9 @@ class ESPhomeDeviceConnection:
         self._ready.clear()
         self._disconnect_event.set()
         if not expected_disconnect and not self._expected_disconnect:
-            logger.info("Unexpected disconnect from %s", self.device_id)
+            logger.warning("Unexpected disconnect from %s", self.device_id)
 
     async def _run(self):
-        """Reconnect loop. Initial connection failures are caught here."""
         while not self._stopped:
             try:
                 await self._connect_and_listen()
@@ -81,6 +81,7 @@ class ESPhomeDeviceConnection:
             address=self.address,
             port=self.port,
             noise_psk=self.encryption_key,
+            password=None,
         )
         await self._client.connect(login=True, on_stop=self._on_stop)
         logger.info(
@@ -93,15 +94,20 @@ class ESPhomeDeviceConnection:
         entities = await self._client.list_entities_services()
         self._entities.clear()
         for ent in entities:
-            self._entities[ent.key] = ent
+            if isinstance(ent, EntityInfo) and hasattr(ent, "key") and hasattr(ent, "name"):
+                self._entities[ent.key] = ent
 
         self._ready.set()
 
         def state_callback(state: EntityState):
             asyncio.create_task(self._handle_state(state))
 
-        await self._client.subscribe_states(state_callback)
-        # Wait until on_stop signals disconnection
+        client = self._client
+        if client is not None:
+            await client.subscribe_states(state_callback)  # type: ignore
+        else:
+            logger.error("Client is None, cannot subscribe to states")
+
         await self._disconnect_event.wait()
 
     async def _handle_state(self, state: EntityState):
