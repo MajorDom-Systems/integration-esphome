@@ -5,6 +5,7 @@ from uuid import NAMESPACE_DNS, UUID, uuid5
 
 import pytest
 import pytest_asyncio
+
 from majordom_integration_sdk.schemas.command import DeviceCommand
 from majordom_integration_sdk.schemas.device import Discovery
 from majordom_integration_sdk.schemas.parameter import ParameterDataType, ParameterRole, ParameterVisibility
@@ -36,7 +37,8 @@ async def controller(deps):
 
 @pytest.fixture
 def mock_connection():
-    with patch("integration_template.connection.ESPhomeDeviceConnection") as MockConn:
+    # ВАЖНО: патчим именно integration_template.controller, потому что там используется ESPhomeDeviceConnection
+    with patch("integration_template.controller.ESPhomeDeviceConnection") as MockConn:
         instance = MagicMock()
         instance.start = AsyncMock()
         instance.stop = AsyncMock()
@@ -57,7 +59,6 @@ def fake_entity():
         for k, v in kwargs.items():
             setattr(ent, k, v)
         return ent
-
     return _make
 
 
