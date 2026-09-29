@@ -18,7 +18,7 @@ from majordom_integration_sdk.schemas.parameter import ParameterDataType, Parame
 
 from . import mapper
 from .connection import ESPhomeDeviceConnection
-from .esphome_spec import get_max_value, get_min_step, get_min_value, get_unit
+from .esphome_spec import get_max_value, get_min_value, get_unit
 from .models import (
     ESPhomeComponentType,
     ESPhomeDevice,
@@ -57,11 +57,14 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
 
     async def start(self) -> None:
         logger.info("Starting ESPHome integration")
+
         class _Listener:
             def __init__(self, callback):
                 self.callback = callback
+
             def zeroconf_did_discover_service(self, info):
                 asyncio.create_task(self.callback(info))
+
         listener = _Listener(self._on_zeroconf_service)
         self._zeroconf_cancel = self.dependencies.zeroconf_discovery_service.register(
             listener=listener,  # type: ignore
@@ -329,8 +332,8 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
 
     async def unpair(self, device: ESPhomeDevice) -> None:
         await self._disconnect_device(device.id)
-        async with self.dependencies.make_device_repository() as repo:
-            await repo.delete(device.id)   # ← исправлено
+        # The Hub removes the device record after unpair; the repository protocol
+        # intentionally does not expose delete() to integrations.
 
     async def identify(self, device: ESPhomeDevice) -> None:
         logger.info("Identify called for %s", device.id)
