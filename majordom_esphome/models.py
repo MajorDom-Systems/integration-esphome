@@ -1,11 +1,11 @@
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from majordom_integration_sdk.schemas.device import Device, Parameter, ParameterState
 from pydantic import BaseModel, Field
 
 
-class ESPhomeParameterType(str, Enum):
+class ESPhomeParameterType(StrEnum):
     STATE = "state"
     SENSOR = "sensor"
     NUMBER = "number"
@@ -13,7 +13,7 @@ class ESPhomeParameterType(str, Enum):
     BUTTON = "button"
 
 
-class ESPhomeComponentType(str, Enum):
+class ESPhomeComponentType(StrEnum):
     LIGHT = "light"
     SWITCH = "switch"
     SENSOR = "sensor"

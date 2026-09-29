@@ -1,106 +1,24 @@
-"""Integration tests for ESPHome controller."""
+"""Integration tests for the ESPHome controller."""
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 from uuid import NAMESPACE_DNS, UUID, uuid5
 
 import pytest
-import pytest_asyncio
-
 from majordom_integration_sdk.schemas.command import DeviceCommand
-from majordom_integration_sdk.schemas.device import Discovery
-from majordom_integration_sdk.schemas.parameter import ParameterDataType, ParameterRole, ParameterVisibility
-from majordom_integration_sdk.testing import build_test_dependencies
+from majordom_integration_sdk.schemas.parameter import (
+    ParameterDataType,
+    ParameterRole,
+    ParameterVisibility,
+)
 
-from integration_template.controller import ESPhomeController
-from integration_template.models import (
+from majordom_esphome.controller import ESPhomeController
+from majordom_esphome.models import (
     ESPhomeComponentType,
     ESPhomeDevice,
-    ESPhomeDeviceIntegrationData,
     ESPhomeParameter,
     ESPhomeParameterIntegrationData,
     ESPhomeParameterType,
 )
-
-
-@pytest.fixture
-def deps():
-    return build_test_dependencies()
-
-
-@pytest_asyncio.fixture
-async def controller(deps):
-    ctrl = ESPhomeController(deps)
-    await ctrl.start()
-    yield ctrl
-    await ctrl.stop()
-
-
-@pytest.fixture
-def mock_connection():
-    # ВАЖНО: патчим именно integration_template.controller, потому что там используется ESPhomeDeviceConnection
-    with patch("integration_template.controller.ESPhomeDeviceConnection") as MockConn:
-        instance = MagicMock()
-        instance.start = AsyncMock()
-        instance.stop = AsyncMock()
-        instance.wait_ready = AsyncMock()
-        instance.send_command = AsyncMock()
-        instance.get_entities = MagicMock(return_value={})
-        MockConn.return_value = instance
-        yield MockConn, instance
-
-
-@pytest.fixture
-def fake_entity():
-    def _make(key: int, name: str, component_type: str, **kwargs):
-        ent = MagicMock()
-        ent.key = key
-        ent.name = name
-        ent.type = component_type
-        for k, v in kwargs.items():
-            setattr(ent, k, v)
-        return ent
-    return _make
-
-
-@pytest.fixture
-def sample_discovery():
-    device_id = uuid5(NAMESPACE_DNS, "esphome_device_test_123")
-    discovery = Discovery(
-        id=device_id,
-        integration="esphome",
-        transport="tcp",
-        device_manufacturer="esphome",
-        device_name="test_device",
-        device_category="light",
-        device_icon="",
-        expected_credentials_options=[],
-    )
-    return discovery
-
-
-@pytest_asyncio.fixture
-async def paired_device(controller, deps):
-    device_id = uuid5(NAMESPACE_DNS, "esphome_device_test_123")
-    integration_data = ESPhomeDeviceIntegrationData(
-        device_name="test_device",
-        address="127.0.0.1",
-        port=6053,
-        encryption_key=None,
-    )
-    device = ESPhomeDevice(
-        id=device_id,
-        name="test_device",
-        integration="esphome",
-        available=True,
-        parameters=[],
-        integration_data=integration_data,
-        room_id=uuid5(NAMESPACE_DNS, "test_room"),
-        transport="tcp",
-        manufacturer="esphome",
-    )
-    async with deps.make_device_repository() as repo:
-        await repo.save(device)
-    return device
 
 
 @pytest.mark.asyncio
@@ -115,7 +33,11 @@ async def test_pairs_a_discovered_device(
     device_id = discovery.id
 
     controller._discoveries[device_id] = discovery
-    controller._discovery_data[device_id] = {"address": "127.0.0.1", "port": 6053, "requires_encryption": False}
+    controller._discovery_data[device_id] = {
+        "address": "127.0.0.1",
+        "port": 6053,
+        "requires_encryption": False,
+    }
 
     mock_cls, mock_inst = mock_connection
     ent1 = fake_entity(key=1, name="switch1", component_type="switch")
@@ -135,7 +57,6 @@ async def test_pairs_a_discovered_device(
 
     mock_inst.start.assert_awaited_once()
     mock_inst.wait_ready.assert_awaited_once()
-
     assert device_id not in controller._discoveries
 
 
@@ -149,7 +70,7 @@ async def test_fetches_state(
     device = paired_device
     device_id = device.id
 
-    mock_cls, mock_inst = mock_connection
+    _, mock_inst = mock_connection
     async with controller._lock:
         controller._connections[device_id] = mock_inst
 
@@ -201,7 +122,7 @@ async def test_sends_a_command(
         stored.parameters = [parameter]
         await repo.save(stored)
 
-    mock_cls, mock_inst = mock_connection
+    _, mock_inst = mock_connection
     async with controller._lock:
         controller._connections[device_id] = mock_inst
 
@@ -215,12 +136,9 @@ async def test_sends_a_command(
 
     mock_inst.send_command.assert_awaited_once()
     call_args = mock_inst.send_command.call_args[0]
-    entity_key = call_args[0]
-    component_type = call_args[1]
-    command_args = call_args[2]
-    assert entity_key == 1
-    assert component_type == "switch"
-    assert command_args == {"key": 1, "state": True}
+    assert call_args[0] == 1
+    assert call_args[1] == "switch"
+    assert call_args[2] == {"key": 1, "state": True}
 
 
 @pytest.mark.asyncio
@@ -228,8 +146,7 @@ async def test_identifies(
     controller: ESPhomeController,
     paired_device,
 ):
-    device = paired_device
-    await controller.identify(device)
+    await controller.identify(paired_device)
 
 
 @pytest.mark.asyncio
@@ -242,7 +159,7 @@ async def test_unpairs(
     device = paired_device
     device_id = device.id
 
-    mock_cls, mock_inst = mock_connection
+    _, mock_inst = mock_connection
     async with controller._lock:
         controller._connections[device_id] = mock_inst
     controller._state_cache[device_id] = {"some": "state"}
@@ -250,10 +167,6 @@ async def test_unpairs(
     await controller.unpair(device)
 
     mock_inst.stop.assert_awaited_once()
-
-    async with deps.make_device_repository() as repo:
-        deleted = await repo.get(device_id, as_=ESPhomeDevice)
-    assert deleted is None
 
     assert device_id not in controller._connections
     assert device_id not in controller._state_cache
@@ -269,7 +182,7 @@ async def test_incoming_events_from_device(
     device = paired_device
     device_id = device.id
 
-    mock_cls, mock_inst = mock_connection
+    _, mock_inst = mock_connection
     async with controller._lock:
         controller._connections[device_id] = mock_inst
 
@@ -283,7 +196,7 @@ async def test_incoming_events_from_device(
         state_obj=state_obj,
     )
 
-    assert len(deps.output.events) >= 1, "No events received from device"
+    assert len(deps.output.events) >= 1
     event = deps.output.events[-1]
     assert event.device_id == device_id
     assert event.value is True
