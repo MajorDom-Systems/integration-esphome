@@ -1,5 +1,6 @@
 """Translation between ESPHome entities/states/commands and MajorDom parameters/values/commands."""
 
+import colorsys
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -43,7 +44,7 @@ from .models import ESPhomeComponentType, ESPhomeParameter, ESPhomeParameterType
 # The library's own registry covers every entity ESPHome knows; only the types in ESPhomeComponentType are mapped.
 _COMPONENT_BY_INFO: dict[type[EntityInfo], str] = {info: name for name, info in COMPONENT_TYPE_TO_INFO.items()}
 
-PERCENT = ParameterUnit.percentage  # MajorDom expresses levels, positions and colour channels as 0-100
+PERCENT = ParameterUnit.percentage  # MajorDom expresses levels, positions and saturation as 0-100
 
 
 PARAMETER_TYPE: dict[ESPhomeComponentType, ESPhomeParameterType] = {
@@ -124,7 +125,10 @@ def parameter_specs(entity: EntityInfo, component: ESPhomeComponentType) -> list
             if capabilities & LightColorCapability.BRIGHTNESS:
                 specs.append(ParameterSpec("brightness", decimal, control, PERCENT, 0, 100))
             if capabilities & LightColorCapability.RGB:
-                specs += [ParameterSpec(f"color_{c}", decimal, control, PERCENT, 0, 100) for c in "rgb"]
+                specs += [
+                    ParameterSpec("color_hue", decimal, control, ParameterUnit.arcdegree, 0, 360),
+                    ParameterSpec("color_saturation", decimal, control, PERCENT, 0, 100),
+                ]
             return specs
         case ESPhomeComponentType.COVER, CoverInfo():
             return [
@@ -156,6 +160,19 @@ def _percent(value: float | None) -> float | None:
     return None if number is None else round(number * 100, 2)
 
 
+def _hue_saturation(state: LightState) -> dict[str, float]:
+    """Colour as the human model MajorDom uses (hue in degrees, saturation in percent), from ESPHome's RGB.
+
+    Brightness is a parameter of its own, so only the colour is kept; black has no hue and reports nothing.
+    """
+    if state.red is None or state.green is None or state.blue is None:
+        return {}
+    hue, saturation, value = colorsys.rgb_to_hsv(state.red, state.green, state.blue)
+    if value == 0:
+        return {}
+    return {"color_hue": round(hue * 360, 1), "color_saturation": round(saturation * 100, 1)}
+
+
 def _index(value: IntEnum | None) -> int | None:
     return None if value is None else int(value)
 
@@ -170,9 +187,7 @@ def state_values(entity: EntityInfo, state: EntityState) -> dict[str, Any]:
             values = {
                 "state": bool(state.state),
                 "brightness": _percent(state.brightness),
-                "color_r": _percent(state.red),
-                "color_g": _percent(state.green),
-                "color_b": _percent(state.blue),
+                **_hue_saturation(state),
             }
         case CoverState():
             values = {"position": _percent(state.position), "operation": _index(state.current_operation)}
@@ -231,13 +246,16 @@ def build_command_args(parameter: ESPhomeParameter, value: Any, states: Mapping[
             args["state"] = _as_bool(value)
         case ESPhomeComponentType.LIGHT, "brightness":
             args["brightness"] = _as_number(value, parameter) / 100
-        case ESPhomeComponentType.LIGHT, "color_r" | "color_g" | "color_b":
+        case ESPhomeComponentType.LIGHT, "color_hue" | "color_saturation":
             current = states.get(data.service_key)
-            channels = [0.0, 0.0, 0.0]
-            if isinstance(current, LightState):
-                channels = [current.red, current.green, current.blue]
-            channels["rgb".index(sub_field[-1])] = _as_number(value, parameter) / 100
-            args["rgb"] = tuple(channels)
+            colour = _hue_saturation(current) if isinstance(current, LightState) else {}
+            hue = colour.get("color_hue", 0.0)
+            saturation = colour.get("color_saturation", 100.0)
+            if sub_field == "color_hue":
+                hue = _as_number(value, parameter)
+            else:
+                saturation = _as_number(value, parameter)
+            args["rgb"] = colorsys.hsv_to_rgb(hue / 360, saturation / 100, 1.0)
         case ESPhomeComponentType.COVER, "position":
             args["position"] = _as_number(value, parameter) / 100
         case ESPhomeComponentType.NUMBER, _:
