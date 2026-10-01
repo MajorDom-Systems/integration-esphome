@@ -75,7 +75,8 @@ Noise encryption. Devices must have the `api:` component enabled in their YAML; 
 - **Transport(s):** TCP/IP (Wi-Fi, Ethernet); devices are found via mDNS (`_esphomelib._tcp`).
 - **Supported entities:** light (on/off, brightness, RGB), switch, sensor, binary sensor, text
 sensor, number, select, button, cover (position), fan (on/off), climate (mode, targets).
-Other ESPHome entities (lock, valve, siren, ...) are skipped for now.
+Every other entity the library knows (lock, valve, text, alarm panel, update, ...) is mapped generically from
+the library's own types (see below); cameras and events are skipped.
 - **Credentials needed to pair:** the API encryption key (type `secret`) if the node has one
 configured; otherwise none.
 
@@ -141,7 +142,7 @@ cleared on recovery; a rejected encryption key is reported as such
 fetch → restart → outage → `unpair` against a virtual device, with and without encryption
 - [x] **Failure paths tested**: unreachable device, wrong or missing key, unsupported credentials,
 command on a read-only parameter, out-of-range values, offline device
-- [ ] **Broad device coverage**: lock, valve, siren, text and other entities are not mapped yet
+- [x] **Broad device coverage**: the entities above by hand, every other entity generically (tested with a lock, valve, text, date and alarm panel)
 - [x] **Readable & structured**: conversion logic in a mapper, models separated
 - [x] **Efficient**: subscriptions instead of polling; states are delivered in order
 - [x] **Diagnosable**: connection failures and unexpected errors are logged with their cause
@@ -170,6 +171,15 @@ plus saturation, the model the Matter and Zigbee integrations use, converted fro
 integers with string labels in `valid_values`, labelled by the ESPHome enum names. Units come from the
 entity's own unit string, else from its device class. Entities in the
 `config` / `diagnostic` category are `setting`, and entities disabled by default are `system`.
+
+### Generic mapping
+
+Entities without a hand-written mapping get parameters from `aioesphomeapi`'s own types (`majordom_esphome/generic.py`):
+one parameter per field of the entity's state (read-only, unless the entity's command accepts it) and one per
+command argument that can be sent on its own. `bool`, `int`, `float` and `str` map directly, the library's integer
+enums become `enum` parameters labelled with their member names, fractions such as a position or volume become
+percentages, and a command-only flag (a valve's `stop`) becomes a button. Commands with several required arguments
+(a date) are read-only. A hand-written mapping wins wherever the generic result is not good enough for the user.
 
 ### Notes
 

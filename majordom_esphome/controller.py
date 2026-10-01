@@ -27,6 +27,7 @@ from .models import (
     ESPhomeDeviceIntegrationData,
     ESPhomeParameter,
     ESPhomeParameterIntegrationData,
+    ParameterSpec,
 )
 
 logger = logging.getLogger(__name__)
@@ -350,7 +351,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
             raise
 
     def _build_parameter(
-        self, device_id: UUID, entity: EntityInfo, component: Any, spec: mapper.ParameterSpec
+        self, device_id: UUID, entity: EntityInfo, component: str, spec: ParameterSpec
     ) -> ESPhomeParameter:
         name = entity.name if spec.sub_field == "state" else f"{entity.name} {spec.sub_field.replace('_', ' ')}"
         return ESPhomeParameter(
@@ -406,7 +407,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
         args = mapper.build_command_args(parameter, command.value, self._states.get(device.id, {}))
         data = parameter.integration_data
         try:
-            await connection.send_command(args["key"], data.component_type.value, args)
+            await connection.send_command(args["key"], data.component_type, args)
         except ConnectionError:
             await self._update_device(device.id, last_error=f"{parameter.name} could not be set: device not connected")
             raise

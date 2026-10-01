@@ -3,7 +3,6 @@
 import colorsys
 import math
 from collections.abc import Mapping
-from dataclasses import dataclass
 from enum import IntEnum
 from typing import Any
 
@@ -38,8 +37,11 @@ from majordom_integration_sdk.schemas.parameter import (
     ParameterVisibility,
 )
 
+from . import generic
 from .esphome_spec import get_unit
-from .models import ESPhomeComponentType, ESPhomeParameter, ESPhomeParameterType
+from .generic import as_bool as _as_bool
+from .generic import as_number as _as_number
+from .models import ESPhomeComponentType, ESPhomeParameter, ESPhomeParameterType, ParameterSpec
 
 # The library's own registry covers every entity ESPHome knows; only the types in ESPhomeComponentType are mapped.
 _COMPONENT_BY_INFO: dict[type[EntityInfo], str] = {info: name for name, info in COMPONENT_TYPE_TO_INFO.items()}
@@ -63,26 +65,15 @@ COVER_OPERATIONS = {
 }  # labels are the enum names, as in the other integrations
 
 
-@dataclass(frozen=True)
-class ParameterSpec:
-    """What one MajorDom parameter of an entity looks like (everything except identity)."""
-
-    sub_field: str
-    data_type: ParameterDataType
-    role: ParameterRole
-    unit: ParameterUnit = ParameterUnit.plain
-    min_value: float | None = None
-    max_value: float | None = None
-    min_step: float | None = None
-    valid_values: dict[int, str] | None = None
+_HAND_WRITTEN = {component.value for component in ESPhomeComponentType}
 
 
-def component_type_of(entity: EntityInfo) -> ESPhomeComponentType | None:
-    """The mapped component type of an entity as reported by a device, or None if it is not supported (yet)."""
-    try:
-        return ESPhomeComponentType(_COMPONENT_BY_INFO.get(type(entity), ""))
-    except ValueError:
-        return None
+def component_type_of(entity: EntityInfo) -> str | None:
+    """The library's name of an entity's kind, or None if it has nothing to map (a camera, an event, ...)."""
+    component = _COMPONENT_BY_INFO.get(type(entity))
+    if component in _HAND_WRITTEN or (component is not None and generic.is_mapped(component)):
+        return component
+    return None
 
 
 def visibility_of(entity: EntityInfo) -> ParameterVisibility:
@@ -93,7 +84,9 @@ def visibility_of(entity: EntityInfo) -> ParameterVisibility:
     return ParameterVisibility.user
 
 
-def parameter_specs(entity: EntityInfo, component: ESPhomeComponentType) -> list[ParameterSpec]:
+def parameter_specs(entity: EntityInfo, component: str) -> list[ParameterSpec]:
+    if component not in _HAND_WRITTEN:
+        return generic.specs(component)
     control, sensor = ParameterRole.control, ParameterRole.sensor
     decimal, boolean = ParameterDataType.decimal, ParameterDataType.bool
     unit = get_unit(getattr(entity, "device_class", None), getattr(entity, "unit_of_measurement", None))
@@ -209,25 +202,9 @@ def state_values(entity: EntityInfo, state: EntityState) -> dict[str, Any]:
         case SwitchState() | BinarySensorState() | FanState():
             values = {"state": bool(state.state)}
         case _:
-            values = {}
+            component = _COMPONENT_BY_INFO.get(type(entity))
+            values = generic.state_values(component, state) if component else {}
     return {sub_field: value for sub_field, value in values.items() if value is not None}
-
-
-def _as_bool(value: Any) -> bool:
-    if value not in (True, False):  # also accepts 0 and 1
-        raise ValueError(f"Expected a boolean, got {value!r}")
-    return bool(value)
-
-
-def _as_number(value: Any, parameter: ESPhomeParameter) -> float:
-    try:
-        number = float(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"Expected a number, got {value!r}") from exc
-    low, high = parameter.min_value, parameter.max_value
-    if (low is not None and number < low) or (high is not None and number > high):
-        raise ValueError(f"{parameter.name}: {number} is outside {low}..{high}")
-    return number
 
 
 def build_command_args(parameter: ESPhomeParameter, value: Any, states: Mapping[int, EntityState]) -> dict[str, Any]:
@@ -274,5 +251,7 @@ def build_command_args(parameter: ESPhomeParameter, value: Any, states: Mapping[
         case ESPhomeComponentType.CLIMATE, str() as target if target.startswith("target_temperature"):
             args[target] = _as_number(value, parameter)
         case _:
-            raise ValueError(f"{parameter.name} cannot be set")
+            if data.component_type in _HAND_WRITTEN:
+                raise ValueError(f"{parameter.name} cannot be set")
+            args.update(generic.command_args(data.component_type, parameter, value))
     return args
