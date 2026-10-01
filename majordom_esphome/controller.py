@@ -254,12 +254,11 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
                 if not entity.name:
                     continue
 
-                component_type_str = getattr(entity, "type", "unknown")
-                try:
-                    comp_enum = ESPhomeComponentType(component_type_str)
-                except ValueError:
-                    logger.warning("Unknown component type: %s", component_type_str)
+                comp_enum = mapper.component_type_of(entity)
+                if comp_enum is None:
+                    logger.warning("Unsupported entity: %s", type(entity).__name__)
                     continue
+                component_type_str = comp_enum.value
 
                 sub_fields = mapper.get_sub_fields(comp_enum)
 

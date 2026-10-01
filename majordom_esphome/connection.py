@@ -6,6 +6,8 @@ from typing import Any
 
 from aioesphomeapi import APIClient, EntityInfo, EntityState
 
+from . import mapper
+
 logger = logging.getLogger(__name__)
 
 
@@ -90,7 +92,7 @@ class ESPhomeDeviceConnection:
             self.port,
         )
 
-        entities = await self._client.list_entities_services()
+        entities, _services = await self._client.list_entities_services()
         self._entities.clear()
         for ent in entities:
             if isinstance(ent, EntityInfo) and hasattr(ent, "key") and hasattr(ent, "name"):
@@ -113,7 +115,8 @@ class ESPhomeDeviceConnection:
         entity = self._entities.get(state.key)
         if not entity:
             return
-        component_type = getattr(entity, "type", "unknown")
+        component = mapper.component_type_of(entity)
+        component_type = component.value if component else "unknown"
         await self.on_state_callback(self.device_id, entity.name, component_type, state)
 
     async def wait_ready(self):

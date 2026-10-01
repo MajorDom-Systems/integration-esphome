@@ -1,8 +1,21 @@
 from typing import Any
 
+from aioesphomeapi import COMPONENT_TYPE_TO_INFO, EntityInfo
 from majordom_integration_sdk.schemas.parameter import ParameterDataType, ParameterRole
 
 from .models import ESPhomeComponentType, ESPhomeParameterType
+
+# The library's own registry covers every entity ESPHome knows; only the types in ESPhomeComponentType are mapped.
+_COMPONENT_BY_INFO: dict[type[EntityInfo], str] = {info: name for name, info in COMPONENT_TYPE_TO_INFO.items()}
+
+
+def component_type_of(entity: EntityInfo) -> ESPhomeComponentType | None:
+    """The mapped component type of an entity as reported by a device, or None if it is not supported (yet)."""
+    try:
+        return ESPhomeComponentType(_COMPONENT_BY_INFO.get(type(entity), ""))
+    except ValueError:
+        return None
+
 
 COMPONENT_TO_DATATYPE = {
     ESPhomeComponentType.LIGHT: ParameterDataType.string,
