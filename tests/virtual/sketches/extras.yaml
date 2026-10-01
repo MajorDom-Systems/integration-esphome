@@ -1,0 +1,72 @@
+# Virtual node with the entity kinds that have no hand-written mapping: they are mapped generically.
+esphome:
+  name: test_node_extras
+
+host:
+  mac_address: "98:35:69:ab:f6:80"
+
+api:
+  port: 6055
+
+logger:
+
+lock:
+  - platform: template
+    name: "Door"
+    id: door_lock
+    optimistic: true
+    lock_action:
+      - logger.log: "Lock"
+    unlock_action:
+      - logger.log: "Unlock"
+    open_action:
+      - logger.log: "Open"
+
+valve:
+  - platform: template
+    name: "Garden Valve"
+    id: garden_valve
+    optimistic: true
+    has_position: true
+    open_action:
+      - logger.log: "Valve open"
+    close_action:
+      - logger.log: "Valve close"
+    stop_action:
+      - logger.log: "Valve stop"
+    position_action:
+      - logger.log: "Valve position"
+
+text:
+  - platform: template
+    name: "Label"
+    id: label_text
+    optimistic: true
+    min_length: 0
+    max_length: 20
+    mode: text
+
+datetime:
+  - platform: template
+    name: "Date"
+    id: a_date
+    type: date
+    optimistic: true
+
+alarm_control_panel:
+  - platform: template
+    name: "House Alarm"
+    id: house_alarm
+    codes: ["1234"]
+    requires_code_to_arm: false
+    arming_home_time: 1s
+    arming_away_time: 1s
+    pending_time: 1s
+    trigger_time: 1s
+
+event:
+  - platform: template
+    name: "Doorbell"
+    id: doorbell
+    event_types:
+      - "ring"

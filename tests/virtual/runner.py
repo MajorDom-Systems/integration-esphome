@@ -36,6 +36,8 @@ ENCRYPTION_KEY = "kiO8WgmbyiIdaQ9fAFcZCdFTzRj6dzmfG/Pu3pbU9JI="  # `api.encrypti
 
 PLAIN = Sketch("virtual.yaml", "test_node", 6053, "983569abf679")
 ENCRYPTED = Sketch("encrypted.yaml", "test_node_enc", 6054, "983569abf679", ENCRYPTION_KEY)
+EXTRAS = Sketch("extras.yaml", "test_node_extras", 6055, "983569abf680")  # entities without a hand-written mapping
+SKETCHES = (PLAIN, ENCRYPTED, EXTRAS)
 
 
 def build(sketch: Sketch) -> None:

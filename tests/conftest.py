@@ -17,13 +17,16 @@ from majordom_esphome.controller import ESPhomeController
 from majordom_esphome.models import ESPhomeDevice
 from tests.helpers import hub_creates_device
 from tests.virtual.mdns import Advert, FakeMDNS, fake_mdns
-from tests.virtual.runner import ENCRYPTED, PLAIN, VirtualDevice, build
+from tests.virtual.runner import ENCRYPTED, PLAIN, SKETCHES, VirtualDevice, build
 
 
 def pytest_collection_finish(session: pytest.Session) -> None:
     """Build the virtual devices before the first test that needs one, outside any test timeout."""
-    if any({"device", "encrypted_device"} & set(getattr(item, "fixturenames", ())) for item in session.items):
-        for sketch in (PLAIN, ENCRYPTED):
+    if any(
+        {"device", "encrypted_device", "extras_device"} & set(getattr(item, "fixturenames", ()))
+        for item in session.items
+    ):
+        for sketch in SKETCHES:
             if not sketch.binary.exists():
                 build(sketch)
 
