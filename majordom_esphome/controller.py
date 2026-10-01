@@ -135,10 +135,8 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
 
     async def _load_paired_devices(self) -> None:
         async with self.dependencies.make_device_repository() as repo:
-            devices = [d for d in await repo.get_all() if d.integration == self.name]
-            for device in devices:
-                if isinstance(device, ESPhomeDevice):
-                    asyncio.create_task(self._connect_device(device))
+            for device in await repo.get_all(ESPhomeDevice):
+                asyncio.create_task(self._connect_device(device))
 
     async def _connect_device(self, device: ESPhomeDevice) -> None:
         async with self._lock:
