@@ -16,6 +16,9 @@ jobs:
   # the controller is implemented.
   test:
     uses: ParkerIndustries/workflows/.github/workflows/test.yml@v1
+    with:
+      # The end-to-end tests run against virtual ESPHome devices, built (once) from tests/virtual/sketches
+      setup-script: pipx install esphome
     # Defaults to the team matrix ["3.12", "3.13"]. Uncomment to customize:
     # with:
     #   python-versions: '["3.12", "3.13", "3.14"]'

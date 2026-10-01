@@ -1,0 +1,176 @@
+# Virtual ESPHome device (host platform): one native-API node, no hardware, no wifi.
+# Build once:  poetry run python -m tests.virtual.build
+# Entities mirror the integration drafts' sketch, with optimistic writes so commands are observable as state.
+esphome:
+  name: test_node
+
+host:
+  mac_address: "98:35:69:ab:f6:79"
+
+api:
+  port: 6053
+
+logger:
+
+sensor:
+  - platform: template
+    name: "Temperature"
+    id: temp
+    device_class: temperature
+    unit_of_measurement: "°C"
+    lambda: "return 21.5;"
+    update_interval: 1s
+
+  - platform: template
+    name: "Humidity"
+    id: humidity
+    device_class: humidity
+    unit_of_measurement: "%"
+    lambda: "return 55.0;"
+    update_interval: 1s
+
+  - platform: template
+    name: "Dust"
+    id: dust
+    device_class: pm25
+    unit_of_measurement: "µg/m³"
+    lambda: "return 12.0;"
+    update_interval: 1s
+
+  - platform: template
+    name: "Distance"
+    id: distance
+    device_class: distance
+    unit_of_measurement: "m"
+    lambda: "return 1.5;"
+    update_interval: 1s
+
+binary_sensor:
+  - platform: template
+    name: "Motion"
+    id: motion
+    device_class: motion
+    lambda: "return true;"
+
+text_sensor:
+  - platform: template
+    name: "Status"
+    id: status
+    lambda: 'return {"OK"};'
+    update_interval: 1s
+
+switch:
+  - platform: template
+    name: "Relay"
+    id: relay_switch
+    optimistic: true
+
+output:
+  - platform: template
+    id: fake_output
+    type: float
+    write_action:
+      - logger.log:
+          format: "Light brightness: %.2f"
+          args: ["state"]
+  - platform: template
+    id: fake_red
+    type: float
+    write_action:
+      - logger.log: "red"
+  - platform: template
+    id: fake_green
+    type: float
+    write_action:
+      - logger.log: "green"
+  - platform: template
+    id: fake_blue
+    type: float
+    write_action:
+      - logger.log: "blue"
+
+light:
+  - platform: monochromatic
+    name: "Virtual Light"
+    id: virtual_light
+    output: fake_output
+  - platform: rgb
+    name: "RGB Light"
+    id: rgb_light
+    red: fake_red
+    green: fake_green
+    blue: fake_blue
+
+fan:
+  - platform: template
+    name: "Virtual Fan"
+    id: virtual_fan
+    speed_count: 3
+    has_direction: true
+    has_oscillating: true
+    on_turn_on:
+      - logger.log: "Fan ON"
+    on_turn_off:
+      - logger.log: "Fan OFF"
+
+cover:
+  - platform: template
+    name: "Blinds"
+    id: blinds
+    optimistic: true
+    has_position: true
+    position_action:
+      - logger.log: "Position"
+    open_action:
+      - logger.log: "Open"
+    close_action:
+      - logger.log: "Close"
+    stop_action:
+      - logger.log: "Stop"
+
+number:
+  - platform: template
+    name: "Target Temp"
+    id: target_temp
+    min_value: 10
+    max_value: 30
+    step: 0.5
+    optimistic: true
+
+select:
+  - platform: template
+    name: "Mode"
+    id: mode_select
+    options:
+      - "AUTO"
+      - "MANUAL"
+    optimistic: true
+
+button:
+  - platform: template
+    name: "Reboot"
+    id: reboot_button
+    on_press:
+      - logger.log: "Reboot pressed"
+
+climate:
+  - platform: thermostat
+    name: HVAC
+    id: hvac
+    sensor: temp
+    default_preset: Default
+    preset:
+      - name: Default
+        default_target_temperature_low: 20
+        default_target_temperature_high: 24
+    heat_action:
+      - logger.log: Heating
+    cool_action:
+      - logger.log: Cooling
+    idle_action:
+      - logger.log: Idle
+    min_idle_time: 1s
+    min_heating_off_time: 1s
+    min_heating_run_time: 1s
+    min_cooling_off_time: 1s
+    min_cooling_run_time: 1s

@@ -1,27 +1,57 @@
 """Shared pytest fixtures for the MajorDom ESPHome integration."""
 
+from collections.abc import AsyncIterator, Callable, Iterator
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
-from uuid import NAMESPACE_DNS, uuid5
 
 import pytest
 import pytest_asyncio
+from aioesphomeapi import EntityInfo
+from majordom_integration_sdk.controller import AbstractController
+from majordom_integration_sdk.discovery.zeroconf_discovery import ZeroconfDiscoveryService
 from majordom_integration_sdk.schemas.device import Discovery
-from majordom_integration_sdk.testing import build_test_dependencies
+from majordom_integration_sdk.schemas.parameter import ParameterRole
+from majordom_integration_sdk.testing import RecordingControllerOutput, build_test_dependencies
 
 from majordom_esphome.controller import ESPhomeController
-from majordom_esphome.models import (
-    ESPhomeDevice,
-    ESPhomeDeviceIntegrationData,
-)
+from majordom_esphome.models import ESPhomeDevice
+from tests.helpers import hub_creates_device
+from tests.virtual.mdns import Advert, FakeMDNS, fake_mdns
+from tests.virtual.runner import ENCRYPTED, PLAIN, VirtualDevice, build
+
+
+def pytest_collection_finish(session: pytest.Session) -> None:
+    """Build the virtual devices before the first test that needs one, outside any test timeout."""
+    if any({"device", "encrypted_device"} & set(getattr(item, "fixturenames", ())) for item in session.items):
+        for sketch in (PLAIN, ENCRYPTED):
+            if not sketch.binary.exists():
+                build(sketch)
 
 
 @pytest.fixture
-def deps():
-    return build_test_dependencies()
+def mdns() -> Iterator[FakeMDNS]:
+    """Zeroconf stubbed out: tests announce nodes explicitly, and nothing touches the network."""
+    with fake_mdns() as fake:
+        yield fake
 
 
 @pytest_asyncio.fixture
-async def controller(deps):
+async def deps(mdns: FakeMDNS) -> AsyncIterator[AbstractController.Dependencies]:
+    """Test dependencies with the SDK's real zeroconf discovery service, running over the stubbed zeroconf."""
+    service = ZeroconfDiscoveryService()
+    await service.start()
+    yield build_test_dependencies().copy(zeroconf_discovery_service=service)
+    await service.stop()
+
+
+@pytest.fixture
+def output(deps: AbstractController.Dependencies) -> RecordingControllerOutput:
+    assert isinstance(deps.output, RecordingControllerOutput)
+    return deps.output
+
+
+@pytest_asyncio.fixture
+async def controller(deps: AbstractController.Dependencies) -> AsyncIterator[ESPhomeController]:
     ctrl = ESPhomeController(deps)
     await ctrl.start()
     yield ctrl
@@ -29,7 +59,7 @@ async def controller(deps):
 
 
 @pytest.fixture
-def mock_connection():
+def mock_connection() -> Any:
     """Patch ESPhomeDeviceConnection where it is used (in the controller module)."""
     with patch("majordom_esphome.controller.ESPhomeDeviceConnection", autospec=True) as MockConn:
         instance = MockConn.return_value
@@ -38,58 +68,54 @@ def mock_connection():
         instance.wait_ready = AsyncMock(return_value=None)
         instance.send_command = AsyncMock(return_value=None)
         instance.get_entities = MagicMock(return_value={})
+        instance.addresses = ["127.0.0.1"]
         yield MockConn, instance
 
 
 @pytest.fixture
-def fake_entity():
-    def _make(key: int, name: str, component_type: str, **kwargs):
-        ent = MagicMock()
-        ent.key = key
-        ent.name = name
-        ent.type = component_type
-        for k, v in kwargs.items():
-            setattr(ent, k, v)
-        return ent
+def make_entity() -> Callable[..., EntityInfo]:
+    """Build a real `aioesphomeapi` entity description, i.e. exactly what a device reports."""
+
+    def _make(info_type: Any, key: int, name: str, **kwargs: Any) -> EntityInfo:
+        return info_type(object_id=name.lower().replace(" ", "_"), key=key, name=name, **kwargs)
 
     return _make
 
 
-@pytest.fixture
-def sample_discovery():
-    device_id = uuid5(NAMESPACE_DNS, "esphome_device_test_123")
-    return Discovery(
-        id=device_id,
-        integration="esphome",
-        transport="tcp",
-        device_manufacturer="esphome",
-        device_name="test_device",
-        device_category="light",
-        device_icon="",
-        expected_credentials_options=[],
-    )
+@pytest_asyncio.fixture
+async def device() -> AsyncIterator[VirtualDevice]:
+    virtual = VirtualDevice(PLAIN)
+    await virtual.start()
+    yield virtual
+    await virtual.stop()
 
 
 @pytest_asyncio.fixture
-async def paired_device(deps):
-    device_id = uuid5(NAMESPACE_DNS, "esphome_device_test_123")
-    integration_data = ESPhomeDeviceIntegrationData(
-        device_name="test_device",
-        address="127.0.0.1",
-        port=6053,
-        encryption_key=None,
-    )
-    device = ESPhomeDevice(
-        id=device_id,
-        name="test_device",
-        integration="esphome",
-        available=True,
-        parameters=[],
-        integration_data=integration_data,
-        room_id=uuid5(NAMESPACE_DNS, "test_room"),
-        transport="tcp",
-        manufacturer="esphome",
-    )
-    async with deps.make_device_repository() as repo:
-        await repo.save(device)
-    return device
+async def encrypted_device() -> AsyncIterator[VirtualDevice]:
+    virtual = VirtualDevice(ENCRYPTED)
+    await virtual.start()
+    yield virtual
+    await virtual.stop()
+
+
+@pytest_asyncio.fixture
+async def discovery(controller: ESPhomeController, mdns: FakeMDNS, device: VirtualDevice) -> Discovery:
+    """The plain virtual device, discovered over mDNS and picked by the user (so the Hub has created the device)."""
+    await mdns.announce(Advert(port=device.port))
+    (found,) = controller.discoveries.values()
+    await hub_creates_device(controller.dependencies, found)
+    return found
+
+
+@pytest_asyncio.fixture
+async def paired(controller: ESPhomeController, discovery: Discovery) -> ESPhomeDevice:
+    """The plain virtual device, paired and connected."""
+    await controller.pair_device(discovery, credentials=None)
+    async with controller.dependencies.make_device_repository() as repo:
+        stored = await repo.get(discovery.id, as_=ESPhomeDevice)
+    assert stored is not None
+    return stored
+
+
+def controls(device: ESPhomeDevice) -> list[Any]:
+    return [p for p in device.parameters if p.role == ParameterRole.control]
