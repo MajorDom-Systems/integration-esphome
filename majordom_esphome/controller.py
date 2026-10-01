@@ -10,6 +10,7 @@ from uuid import NAMESPACE_DNS, UUID, uuid5
 from majordom_integration_sdk.controller import AbstractController
 from majordom_integration_sdk.discovery.zeroconf_discovery import ZeroconfDiscoveryInfo, ZeroconfDiscoveryService
 from majordom_integration_sdk.schemas import (
+    CredentialsType,
     DeviceParameterChange,
     ProvidedCredentials,
 )
@@ -96,34 +97,33 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
 
     async def _on_zeroconf_service(self, service_info: ZeroconfDiscoveryInfo) -> None:
         try:
-            name = service_info.name
+            node_name = service_info.name.removesuffix(f".{service_info.type_}")
+            properties = service_info.decoded_properties
+            mac = properties.get("mac")
+            device_id = self.device_uuid(mac or node_name)
+
             server = service_info.server
             addresses = service_info.parsed_addresses or []
-            address = server or (addresses[0] if addresses else name)
+            address = server or (addresses[0] if addresses else node_name)
             port = service_info.port or 6053
-            properties = service_info.properties
+            encrypted = "api_encryption" in properties  # a key is configured (else `..._supported`)
 
-            mac = (properties.get(b"mac") or b"").decode("utf-8", errors="ignore") or name
-            unique_id = mac.replace(":", "").lower()
-            device_id = uuid5(NAMESPACE_DNS, f"esphome_device_{unique_id}")
-
-            has_encryption = bool(properties.get(b"encryption"))
             discovery = Discovery(
                 id=device_id,
                 integration=self.name,
                 transport="tcp",
                 device_manufacturer="esphome",
-                device_name=name,
-                device_category="light",
-                device_icon="",
-                expected_credentials_options=[],
+                device_name=properties.get("friendly_name") or node_name,
+                device_category=None,  # a node may host anything
+                device_icon=None,
+                expected_credentials_options=[CredentialsType.secret if encrypted else CredentialsType.none],
             )
             self._discovery_data[device_id] = {
                 "address": address,
                 "port": port,
-                "requires_encryption": has_encryption,
+                "requires_encryption": encrypted,
             }
-            self._discovery_names[name] = device_id
+            self._discovery_names[service_info.name] = device_id
             known = self._discoveries.get(device_id)
             if known == discovery:
                 return
@@ -132,7 +132,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
                 await self.dependencies.output.controller_did_receive_discovery(self, discovery)
             else:
                 await self.dependencies.output.controller_did_update_discovery(self, discovery)
-            logger.debug("Discovered ESPHome device: %s at %s:%s", name, address, port)
+            logger.debug("Discovered ESPHome node %s at %s:%s", node_name, address, port)
         except Exception:
             logger.exception("Error handling zeroconf discovery")
 
