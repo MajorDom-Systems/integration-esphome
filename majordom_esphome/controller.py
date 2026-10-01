@@ -8,6 +8,7 @@ from typing import Any
 from uuid import NAMESPACE_DNS, UUID, uuid5
 
 from majordom_integration_sdk.controller import AbstractController
+from majordom_integration_sdk.discovery.zeroconf_discovery import ZeroconfDiscoveryInfo, ZeroconfDiscoveryService
 from majordom_integration_sdk.schemas import (
     DeviceParameterChange,
     ProvidedCredentials,
@@ -39,6 +40,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
         self._connections: dict[UUID, ESPhomeDeviceConnection] = {}
         self._discoveries: dict[UUID, Discovery] = {}
         self._discovery_data: dict[UUID, dict] = {}
+        self._discovery_names: dict[str, UUID] = {}  # mDNS record name -> discovery id, for goodbyes
         self._zeroconf_cancel: Any | None = None
         self._lock = asyncio.Lock()
         self._state_cache: dict[UUID, dict[str, Any]] = {}
@@ -58,17 +60,8 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
     async def start(self) -> None:
         logger.info("Starting ESPHome integration")
 
-        class _Listener:
-            def __init__(self, callback):
-                self.callback = callback
-
-            def zeroconf_did_discover_service(self, info):
-                asyncio.create_task(self.callback(info))
-
-        listener = _Listener(self._on_zeroconf_service)
         self._zeroconf_cancel = self.dependencies.zeroconf_discovery_service.register(
-            listener=listener,  # type: ignore
-            services={"_esphomelib._tcp.local."},
+            self, services={"_esphomelib._tcp.local."}
         )
         await self._load_paired_devices()
 
@@ -83,21 +76,36 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
                 await conn.stop()
             self._connections.clear()
 
-    async def _on_zeroconf_service(self, service_info: Any) -> None:
-        try:
-            name = getattr(service_info, "name", "Unknown")
-            server = getattr(service_info, "server", None)
-            addresses = getattr(service_info, "parsed_addresses", lambda *a, **k: [])()
-            address = server or (addresses[0] if addresses else name)
-            port = getattr(service_info, "port", 6053)
-            properties = getattr(service_info, "properties", {}) or {}
+    # ZeroconfDiscoveryListener: called by the SDK's discovery service
 
-            mac = properties.get(b"mac", b"").decode("utf-8", errors="ignore") or name
+    async def zeroconf_did_discover_service(
+        self, zeroconf: ZeroconfDiscoveryService, info: ZeroconfDiscoveryInfo
+    ) -> None:
+        await self._on_zeroconf_service(info)
+
+    async def zeroconf_did_update_service(
+        self, zeroconf: ZeroconfDiscoveryService, info: ZeroconfDiscoveryInfo
+    ) -> None:
+        await self._on_zeroconf_service(info)
+
+    async def zeroconf_did_remove_service(self, zeroconf: ZeroconfDiscoveryService, type_: str, name: str) -> None:
+        device_id = self._discovery_names.pop(name, None)
+        if device_id is not None and self._discoveries.pop(device_id, None) is not None:
+            self._discovery_data.pop(device_id, None)
+            await self.dependencies.output.controller_did_lose_discovery(self, device_id)
+
+    async def _on_zeroconf_service(self, service_info: ZeroconfDiscoveryInfo) -> None:
+        try:
+            name = service_info.name
+            server = service_info.server
+            addresses = service_info.parsed_addresses or []
+            address = server or (addresses[0] if addresses else name)
+            port = service_info.port or 6053
+            properties = service_info.properties
+
+            mac = (properties.get(b"mac") or b"").decode("utf-8", errors="ignore") or name
             unique_id = mac.replace(":", "").lower()
             device_id = uuid5(NAMESPACE_DNS, f"esphome_device_{unique_id}")
-
-            if device_id in self._discoveries:
-                return
 
             has_encryption = bool(properties.get(b"encryption"))
             discovery = Discovery(
@@ -115,8 +123,15 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
                 "port": port,
                 "requires_encryption": has_encryption,
             }
+            self._discovery_names[name] = device_id
+            known = self._discoveries.get(device_id)
+            if known == discovery:
+                return
             self._discoveries[device_id] = discovery
-            await self.dependencies.output.controller_did_receive_discovery(self, discovery)
+            if known is None:
+                await self.dependencies.output.controller_did_receive_discovery(self, discovery)
+            else:
+                await self.dependencies.output.controller_did_update_discovery(self, discovery)
             logger.debug("Discovered ESPHome device: %s at %s:%s", name, address, port)
         except Exception:
             logger.exception("Error handling zeroconf discovery")
