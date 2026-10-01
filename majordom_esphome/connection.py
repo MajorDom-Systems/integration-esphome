@@ -15,13 +15,14 @@ from aioesphomeapi import (
 
 logger = logging.getLogger(__name__)
 
-CONNECT_TIMEOUT = 15.0  # seconds, for one connection attempt including the entity list
+ADDRESS_TIMEOUT = 3.0  # seconds, per address: a dead address must not delay the next one
 WAIT_READY_TIMEOUT = 30.0
 RECONNECT_DELAY_FIRST = 1.0
 RECONNECT_DELAY_MAX = 30.0
 
 StateCallback = Callable[[UUID, EntityInfo, EntityState], Awaitable[None]]
 AvailabilityCallback = Callable[[UUID, bool, str | None], Awaitable[None]]  # (device id, available, reason if not)
+AddressesCallback = Callable[[UUID, list[str]], Awaitable[None]]
 
 
 def describe_error(exc: BaseException) -> str:
@@ -41,18 +42,20 @@ class ESPhomeDeviceConnection:
     def __init__(
         self,
         device_id: UUID,
-        address: str,
+        addresses: list[str],
         port: int,
         encryption_key: str | None,
         on_state: StateCallback,
         on_availability: AvailabilityCallback | None = None,
+        on_addresses: AddressesCallback | None = None,
     ) -> None:
         self.device_id = device_id
-        self.address = address
+        self.addresses = list(addresses)  # hostname and IPs, tried in order; reordered by what worked
         self.port = port
         self.encryption_key = encryption_key
         self.on_state_callback = on_state
         self.on_availability_callback = on_availability
+        self.on_addresses_callback = on_addresses
 
         self.last_error: Exception | None = None
         self._client: APIClient | None = None
@@ -124,7 +127,9 @@ class ESPhomeDeviceConnection:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                logger.warning("Connection to %s (%s:%s) failed: %r", self.device_id, self.address, self.port, exc)
+                logger.warning(
+                    "Connection to %s (%s, port %s) failed: %r", self.device_id, self.addresses, self.port, exc
+                )
                 self.last_error = exc
                 self._ready.clear()
                 self._failed.set()
@@ -134,10 +139,23 @@ class ESPhomeDeviceConnection:
                 delay = min(delay * 2, RECONNECT_DELAY_MAX)
 
     async def _connect(self) -> None:
+        """Connect through the first address that works; remember what worked for the next connection."""
         self._disconnected.clear()
-        async with asyncio.timeout(CONNECT_TIMEOUT):
-            await self._connect_to(self.address)
-        await self._report_availability(True, None)
+        failed: list[str] = []
+        error: Exception = ConnectionError("The device has no address")
+        for address in list(self.addresses):
+            try:
+                async with asyncio.timeout(ADDRESS_TIMEOUT):
+                    await self._connect_to(address)
+            except Exception as exc:
+                logger.info("Device %s is not reachable at %s: %r", self.device_id, address, exc)
+                error = exc
+                failed.append(address)
+                await self._close_client()
+                continue
+            await self._remember(address, failed)
+            return
+        raise error
 
     async def _connect_to(self, address: str) -> None:
         client = APIClient(address, self.port, None, noise_psk=self.encryption_key)
@@ -149,6 +167,19 @@ class ESPhomeDeviceConnection:
         self.last_error = None
         self._ready.set()
         logger.info("Connected to ESPHome device %s at %s:%s", self.device_id, address, self.port)
+
+    async def _remember(self, address: str, failed: list[str]) -> None:
+        """Working address first, addresses that failed this time last."""
+        untried = [a for a in self.addresses if a != address and a not in failed]
+        remembered = [address, *untried, *failed]
+        if remembered != self.addresses:
+            self.addresses = remembered
+            if self.on_addresses_callback is not None:
+                try:
+                    await self.on_addresses_callback(self.device_id, remembered)
+                except Exception:
+                    logger.exception("Error saving the addresses of %s", self.device_id)
+        await self._report_availability(True, None)
 
     async def _on_stop(self, expected_disconnect: bool) -> None:
         logger.info("Device %s disconnected (expected=%s)", self.device_id, expected_disconnect)

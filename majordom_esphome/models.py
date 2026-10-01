@@ -29,7 +29,7 @@ class ESPhomeComponentType(StrEnum):
 class ESPhomeDeviceIntegrationData(BaseModel):
     device_name: str | None = None
     unique_id: str | None = None
-    address: str | None = None
+    addresses: list[str] = Field(default_factory=list)  # hostname first, then IPs; ordered by past success
     port: int = 6053
     encryption_key: str | None = None
     mac_address: str | None = None

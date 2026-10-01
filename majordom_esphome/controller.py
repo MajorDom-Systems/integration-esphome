@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Coroutine
+from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
@@ -31,6 +32,15 @@ from .models import (
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class _DiscoveryData:
+    addresses: list[str]
+    port: int
+    mac: str | None
+    node_name: str
+    mdns_name: str
+
+
 class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
     name = "esphome"
 
@@ -38,7 +48,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
         super().__init__(dependencies)
         self._connections: dict[UUID, ESPhomeDeviceConnection] = {}
         self._discoveries: dict[UUID, Discovery] = {}
-        self._discovery_data: dict[UUID, dict] = {}
+        self._discovery_data: dict[UUID, _DiscoveryData] = {}
         self._discovery_names: dict[str, UUID] = {}  # mDNS record name -> discovery id, for goodbyes
         self._zeroconf_cancel: Any | None = None
         self._paired: set[UUID] = set()
@@ -105,12 +115,10 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
             properties = service_info.decoded_properties
             mac = properties.get("mac")
             device_id = self.device_uuid(mac or node_name)
+            addresses = self._announced_addresses(service_info, node_name)
             if device_id in self._paired:
+                await self._refresh_addresses(device_id, addresses)
                 return
-
-            server = service_info.server
-            addresses = service_info.parsed_addresses or []
-            address = server or (addresses[0] if addresses else node_name)
             port = service_info.port or 6053
             encrypted = "api_encryption" in properties  # a key is configured (else `..._supported`)
 
@@ -124,11 +132,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
                 device_icon=None,
                 expected_credentials_options=[CredentialsType.secret if encrypted else CredentialsType.none],
             )
-            self._discovery_data[device_id] = {
-                "address": address,
-                "port": port,
-                "requires_encryption": encrypted,
-            }
+            self._discovery_data[device_id] = _DiscoveryData(addresses, port, mac, node_name, service_info.name)
             self._discovery_names[service_info.name] = device_id
             known = self._discoveries.get(device_id)
             if known == discovery:
@@ -138,9 +142,37 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
                 await self.dependencies.output.controller_did_receive_discovery(self, discovery)
             else:
                 await self.dependencies.output.controller_did_update_discovery(self, discovery)
-            logger.debug("Discovered ESPHome node %s at %s:%s", node_name, address, port)
+            logger.debug("Discovered ESPHome node %s at %s:%s", node_name, addresses, port)
         except Exception:
             logger.exception("Error handling zeroconf discovery")
+
+    @staticmethod
+    def _announced_addresses(info: ZeroconfDiscoveryInfo, node_name: str) -> list[str]:
+        """Hostname first (it follows the device through DHCP changes), then the announced IPs."""
+        hostname = info.server.rstrip(".") if info.server else None
+        addresses = [hostname, *(info.parsed_addresses or [])] if hostname else list(info.parsed_addresses or [])
+        return list(dict.fromkeys(addresses)) or [f"{node_name}.local"]
+
+    async def _refresh_addresses(self, device_id: UUID, announced: list[str]) -> None:
+        """A paired device announced itself again: learn its new addresses, forget the ones it left."""
+        device = await self._update_device(device_id)
+        if device is None:
+            return
+        known = device.integration_data.addresses
+        refreshed = [a for a in announced if a not in known] + [a for a in known if a in announced]
+        if refreshed == known:
+            return
+        logger.info("Addresses of %s changed: %s -> %s", device_id, known, refreshed)
+        await self._save_addresses(device_id, refreshed)
+        if connection := self._connections.get(device_id):
+            connection.addresses = refreshed
+
+    async def _save_addresses(self, device_id: UUID, addresses: list[str]) -> None:
+        async with self.dependencies.make_device_repository() as repo:
+            device = await repo.get(device_id, as_=ESPhomeDevice)
+            if device is not None:
+                data = device.integration_data.model_copy(update={"addresses": addresses})
+                await repo.save(device.model_copy(update={"integration_data": data}))
 
     async def _load_paired_devices(self) -> None:
         async with self.dependencies.make_device_repository() as repo:
@@ -151,23 +183,24 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
 
     def _connect(self, device: ESPhomeDevice) -> None:
         data = device.integration_data
-        if data.address is None:
+        if not data.addresses:
             logger.error("Device %s has no address, skipping", device.id)
             return
-        connection = self._make_connection(device.id, data.address, data.port, data.encryption_key)
+        connection = self._make_connection(device.id, data.addresses, data.port, data.encryption_key)
         self._connections[device.id] = connection
         self._spawn(connection.start())
 
     def _make_connection(
-        self, device_id: UUID, address: str, port: int, encryption_key: str | None
+        self, device_id: UUID, addresses: list[str], port: int, encryption_key: str | None
     ) -> ESPhomeDeviceConnection:
         return ESPhomeDeviceConnection(
             device_id=device_id,
-            address=address,
+            addresses=addresses,
             port=port,
             encryption_key=encryption_key,
             on_state=self._on_state,
             on_availability=self._on_availability,
+            on_addresses=self._on_addresses,
         )
 
     def _spawn(self, coroutine: Coroutine[Any, Any, None]) -> None:
@@ -184,6 +217,10 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
             await self.dependencies.output.controller_did_connect_device(self, device_id)
         else:
             await self.dependencies.output.controller_did_lose_device(self, device_id)
+
+    async def _on_addresses(self, device_id: UUID, addresses: list[str]) -> None:
+        if device_id in self._connections:  # not while pairing: the device is saved with the final order
+            await self._save_addresses(device_id, addresses)
 
     async def _update_device(self, device_id: UUID, **changes: Any) -> ESPhomeDevice | None:
         async with self.dependencies.make_device_repository() as repo:
@@ -253,10 +290,10 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
             encryption_key = credentials.value if credentials and credentials_type == CredentialsType.secret else None
             if credentials_type == CredentialsType.secret and not encryption_key:
                 raise ValueError("The encryption key is required for this device")
-            address = integration_data["address"]
-            port = integration_data["port"]
 
-            conn = self._make_connection(discovery.id, address, port, encryption_key)
+            conn = self._make_connection(
+                discovery.id, integration_data.addresses, integration_data.port, encryption_key
+            )
             await conn.start()
             await conn.wait_ready()
 
@@ -282,9 +319,10 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
                     "last_error": None,
                     "integration_data": ESPhomeDeviceIntegrationData(
                         device_name=discovery.device_name,
-                        unique_id=str(discovery.id),
-                        address=address,
-                        port=port,
+                        unique_id=integration_data.mac,
+                        mac_address=integration_data.mac,
+                        addresses=conn.addresses,
+                        port=integration_data.port,
                         encryption_key=encryption_key,
                     ),
                 }
