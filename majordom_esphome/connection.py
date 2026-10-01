@@ -4,9 +4,29 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from aioesphomeapi import APIClient, APIConnectionError, EntityInfo, EntityState
+from aioesphomeapi import (
+    APIClient,
+    APIConnectionError,
+    EntityInfo,
+    EntityState,
+    InvalidEncryptionKeyAPIError,
+    RequiresEncryptionAPIError,
+)
 
 logger = logging.getLogger(__name__)
+
+WAIT_READY_TIMEOUT = 30.0
+
+
+def describe_error(exc: BaseException) -> str:
+    """Plain-language reason for the user; the technical detail stays in the logs."""
+    if isinstance(exc, RequiresEncryptionAPIError):
+        return "The device requires an encryption key"
+    if isinstance(exc, InvalidEncryptionKeyAPIError):
+        return "The device rejected the encryption key"
+    if isinstance(exc, TimeoutError):
+        return "The device did not respond in time"
+    return "The device is not reachable"
 
 
 class ESPhomeDeviceConnection:
@@ -27,13 +47,17 @@ class ESPhomeDeviceConnection:
         self._client: APIClient | None = None
         self._task: asyncio.Task | None = None
         self._entities: dict[int, EntityInfo] = {}
+        self.last_error: Exception | None = None
         self._ready = asyncio.Event()
+        self._failed = asyncio.Event()
         self._expected_disconnect = False
         self._stopped = False
         self._disconnect_event = asyncio.Event()
         self._disconnect_event.set()
 
     async def start(self):
+        self._failed.clear()
+        self.last_error = None
         self._stopped = False
         self._expected_disconnect = False
         self._disconnect_event.clear()
@@ -72,7 +96,9 @@ class ESPhomeDeviceConnection:
                     self.address,
                     e,
                 )
+                self.last_error = e
                 self._ready.clear()
+                self._failed.set()
                 await asyncio.sleep(5)
 
     async def _connect_and_listen(self):
@@ -115,8 +141,19 @@ class ESPhomeDeviceConnection:
             return
         await self.on_state_callback(self.device_id, entity, state)
 
-    async def wait_ready(self):
-        await self._ready.wait()
+    async def wait_ready(self, timeout: float = WAIT_READY_TIMEOUT) -> None:
+        """Wait for the first successful connection; fail as soon as an attempt fails (no endless retrying)."""
+        waiters = {asyncio.create_task(self._ready.wait()), asyncio.create_task(self._failed.wait())}
+        try:
+            await asyncio.wait(waiters, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for waiter in waiters:
+                waiter.cancel()
+        if self._ready.is_set():
+            return
+        if self.last_error is not None:
+            raise ConnectionError(describe_error(self.last_error)) from self.last_error
+        raise TimeoutError("The device did not respond in time")
 
     def get_entities(self) -> dict[int, EntityInfo]:
         return self._entities.copy()

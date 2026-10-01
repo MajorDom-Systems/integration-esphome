@@ -19,7 +19,7 @@ from majordom_integration_sdk.schemas.command import DeviceCommand
 from majordom_integration_sdk.schemas.device import Discovery
 
 from . import mapper
-from .connection import ESPhomeDeviceConnection
+from .connection import ESPhomeDeviceConnection, describe_error
 from .models import (
     ESPhomeDevice,
     ESPhomeDeviceIntegrationData,
@@ -224,29 +224,28 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
         credentials: ProvidedCredentials | None,
     ) -> None:
         logger.info("Pairing ESPHome device: %s", discovery.id)
-
-        encryption_key: str | None = None
-        if credentials and credentials.type == "encryption_key":
-            encryption_key = credentials.value
-
-        integration_data = self._discovery_data.get(discovery.id, {})
-        if integration_data.get("requires_encryption") and not encryption_key:
-            raise ValueError("Encryption key is required for this device")
-
-        address = integration_data.get("address")
-        if address is None:
-            raise ValueError("Device address is required")
-        port = integration_data.get("port", 6053)
-
-        conn = ESPhomeDeviceConnection(
-            device_id=discovery.id,
-            address=address,
-            port=port,
-            encryption_key=encryption_key,
-            on_state=self._on_state,
-        )
-
+        known = self._discoveries.get(discovery.id, discovery)
+        conn: ESPhomeDeviceConnection | None = None
         try:
+            integration_data = self._discovery_data.get(discovery.id)
+            if integration_data is None:
+                raise ValueError("Unknown device: it is no longer discovered")
+            credentials_type = credentials.type if credentials else CredentialsType.none
+            if credentials_type not in known.expected_credentials_options:
+                raise ValueError(f"Unsupported credentials for this device: {credentials_type}")
+            encryption_key = credentials.value if credentials and credentials_type == CredentialsType.secret else None
+            if credentials_type == CredentialsType.secret and not encryption_key:
+                raise ValueError("The encryption key is required for this device")
+            address = integration_data["address"]
+            port = integration_data["port"]
+
+            conn = ESPhomeDeviceConnection(
+                device_id=discovery.id,
+                address=address,
+                port=port,
+                encryption_key=encryption_key,
+                on_state=self._on_state,
+            )
             await conn.start()
             await conn.wait_ready()
 
@@ -291,8 +290,14 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
             self._discoveries.pop(discovery.id, None)
             self._discovery_data.pop(discovery.id, None)
 
-        except Exception:
-            await conn.stop()
+        except Exception as exc:
+            if conn is not None:
+                await conn.stop()
+            logger.exception("Pairing %s failed", discovery.id)
+            reason = str(exc) if isinstance(exc, ValueError | LookupError) else describe_error(exc.__cause__ or exc)
+            failed = known.model_copy(update={"last_error": reason})
+            self._discoveries[discovery.id] = failed
+            await self.dependencies.output.controller_did_update_discovery(self, failed)
             raise
 
     def _build_parameter(
