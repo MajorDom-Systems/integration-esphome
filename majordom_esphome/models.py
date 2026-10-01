@@ -1,7 +1,6 @@
 from enum import StrEnum
-from typing import Any
 
-from majordom_integration_sdk.schemas.device import Device, Parameter, ParameterState
+from majordom_integration_sdk.schemas.device import Device, Parameter
 from pydantic import BaseModel, Field
 
 
@@ -38,6 +37,7 @@ class ESPhomeDeviceIntegrationData(BaseModel):
 
 class ESPhomeParameterIntegrationData(BaseModel):
     entity_name: str
+    object_id: str | None = None  # ESPHome's stable slug of the entity name; parameter ids derive from it
     component_type: ESPhomeComponentType
     parameter_type: ESPhomeParameterType
     service_key: int | None = None
@@ -51,8 +51,3 @@ class ESPhomeDevice(Device):
 
 class ESPhomeParameter(Parameter):
     integration_data: ESPhomeParameterIntegrationData
-
-
-class ESPhomeParameterState(ParameterState):
-    integration_data: ESPhomeParameterIntegrationData
-    value: Any = None

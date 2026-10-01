@@ -5,8 +5,9 @@ from __future__ import annotations
 import asyncio
 import logging
 from typing import Any
-from uuid import NAMESPACE_DNS, UUID, uuid5
+from uuid import UUID
 
+from aioesphomeapi import EntityInfo, EntityState
 from majordom_integration_sdk.controller import AbstractController
 from majordom_integration_sdk.discovery.zeroconf_discovery import ZeroconfDiscoveryInfo, ZeroconfDiscoveryService
 from majordom_integration_sdk.schemas import (
@@ -16,18 +17,14 @@ from majordom_integration_sdk.schemas import (
 )
 from majordom_integration_sdk.schemas.command import DeviceCommand
 from majordom_integration_sdk.schemas.device import Discovery
-from majordom_integration_sdk.schemas.parameter import ParameterDataType, ParameterRole, ParameterVisibility
 
 from . import mapper
 from .connection import ESPhomeDeviceConnection
-from .esphome_spec import get_max_value, get_min_value, get_unit
 from .models import (
-    ESPhomeComponentType,
     ESPhomeDevice,
     ESPhomeDeviceIntegrationData,
     ESPhomeParameter,
     ESPhomeParameterIntegrationData,
-    ESPhomeParameterType,
 )
 
 logger = logging.getLogger(__name__)
@@ -186,34 +183,29 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
         if conn:
             await conn.stop()
 
-    async def _on_state(
-        self,
-        device_id: UUID,
-        entity_name: str,
-        component_type: str,
-        state_obj: Any,
-    ) -> None:
+    async def _on_state(self, device_id: UUID, entity: EntityInfo, state: EntityState) -> None:
         try:
-            sub_values = mapper.convert_entity_state(state_obj, component_type)
-            events: list[DeviceParameterChange] = []
-
-            cache = self._state_cache.setdefault(device_id, {})
-
-            for sub_field, value in sub_values:
-                param_id = uuid5(NAMESPACE_DNS, f"{device_id}_{entity_name}_{sub_field}")
-                cache[f"{entity_name}_{sub_field}"] = value
-                events.append(
-                    DeviceParameterChange(
-                        device_id=device_id,
-                        parameter_id=param_id,
-                        value=value,
-                    )
-                )
-
+            events = self._events(device_id, entity, state)
             if events:
                 await self.dependencies.output.controller_did_receive_events(self, events)
         except Exception:
-            logger.exception("Error handling state for %s", entity_name)
+            logger.exception("Error handling state for %s", entity.name)
+
+    def _events(self, device_id: UUID, entity: EntityInfo, state: EntityState) -> list[DeviceParameterChange]:
+        component = mapper.component_type_of(entity)
+        if component is None:
+            return []
+        exposed = {spec.sub_field for spec in mapper.parameter_specs(entity, component)}
+        return [
+            DeviceParameterChange(
+                device_id=device_id, parameter_id=self._parameter_id(device_id, entity, sub_field), value=value
+            )
+            for sub_field, value in mapper.state_values(entity, state).items()
+            if sub_field in exposed
+        ]
+
+    def _parameter_id(self, device_id: UUID, entity: EntityInfo, sub_field: str) -> UUID:
+        return self.parameter_uuid(device_id, f"{entity.object_id}_{sub_field}")
 
     async def pair_device(
         self,
@@ -247,69 +239,13 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
             await conn.start()
             await conn.wait_ready()
 
-            entities = conn.get_entities()
-            parameters: list[ESPhomeParameter] = []
-
-            for entity_key, entity in entities.items():
-                if not entity.name:
-                    continue
-
-                comp_enum = mapper.component_type_of(entity)
-                if comp_enum is None:
-                    logger.warning("Unsupported entity: %s", type(entity).__name__)
-                    continue
-                component_type_str = comp_enum.value
-
-                sub_fields = mapper.get_sub_fields(comp_enum)
-
-                if sub_fields:
-                    for sub_field, data_type, role in sub_fields:
-                        param_id = uuid5(NAMESPACE_DNS, f"{discovery.id}_{entity.name}_{sub_field}")
-                        is_number_value = comp_enum == ESPhomeComponentType.NUMBER and sub_field == "state"
-
-                        param = ESPhomeParameter(
-                            id=param_id,
-                            name=f"{entity.name}_{sub_field}",
-                            data_type=data_type,
-                            role=role,
-                            unit=get_unit(component_type_str, getattr(entity, "device_class", None)),
-                            min_value=get_min_value(component_type_str) if is_number_value else None,
-                            max_value=get_max_value(component_type_str) if is_number_value else None,
-                            visibility=ParameterVisibility.user,
-                            integration_data=ESPhomeParameterIntegrationData(
-                                entity_name=entity.name,
-                                component_type=comp_enum,
-                                parameter_type=mapper.COMPONENT_TO_PARAMETER_TYPE.get(
-                                    comp_enum, ESPhomeParameterType.STATE
-                                ),
-                                service_key=entity_key,
-                                sub_field=sub_field,
-                            ),
-                        )
-                        parameters.append(param)
-                else:
-                    param_id = uuid5(NAMESPACE_DNS, f"{discovery.id}_{entity.name}_state")
-
-                    param = ESPhomeParameter(
-                        id=param_id,
-                        name=entity.name,
-                        data_type=mapper.COMPONENT_TO_DATATYPE.get(comp_enum, ParameterDataType.none),
-                        role=mapper.COMPONENT_TO_ROLE.get(comp_enum, ParameterRole.control),
-                        unit=get_unit(component_type_str, getattr(entity, "device_class", None)),
-                        min_value=get_min_value(component_type_str),
-                        max_value=get_max_value(component_type_str),
-                        visibility=ParameterVisibility.user,
-                        integration_data=ESPhomeParameterIntegrationData(
-                            entity_name=entity.name,
-                            component_type=comp_enum,
-                            parameter_type=mapper.COMPONENT_TO_PARAMETER_TYPE.get(
-                                comp_enum, ESPhomeParameterType.STATE
-                            ),
-                            service_key=entity_key,
-                            sub_field="state",
-                        ),
-                    )
-                    parameters.append(param)
+            parameters = [
+                self._build_parameter(discovery.id, entity, component, spec)
+                for entity in conn.get_entities().values()
+                if (component := mapper.component_type_of(entity)) is not None
+                for spec in mapper.parameter_specs(entity, component)
+            ]
+            main = next((p.id for p in parameters if p.can_be_main_parameter and p.role == "control"), None)
 
             device = ESPhomeDevice(
                 id=discovery.id,
@@ -317,6 +253,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
                 integration=self.name,
                 available=True,
                 parameters=parameters,
+                main_parameter=main,
                 room_id=discovery.id,
                 transport=getattr(discovery, "transport", "tcp"),
                 manufacturer=getattr(discovery, "device_manufacturer", "esphome"),
@@ -343,6 +280,31 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
         except Exception:
             await conn.stop()
             raise
+
+    def _build_parameter(
+        self, device_id: UUID, entity: EntityInfo, component: Any, spec: mapper.ParameterSpec
+    ) -> ESPhomeParameter:
+        name = entity.name if spec.sub_field == "state" else f"{entity.name} {spec.sub_field.replace('_', ' ')}"
+        return ESPhomeParameter(
+            id=self._parameter_id(device_id, entity, spec.sub_field),
+            name=name,
+            data_type=spec.data_type,
+            role=spec.role,
+            unit=spec.unit,
+            min_value=spec.min_value,
+            max_value=spec.max_value,
+            min_step=spec.min_step,
+            valid_values=spec.valid_values,
+            visibility=mapper.visibility_of(entity),
+            integration_data=ESPhomeParameterIntegrationData(
+                entity_name=entity.name,
+                object_id=entity.object_id,
+                component_type=component,
+                parameter_type=mapper.PARAMETER_TYPE.get(component, mapper.ESPhomeParameterType.STATE),
+                service_key=entity.key,
+                sub_field=spec.sub_field,
+            ),
+        )
 
     async def unpair(self, device: ESPhomeDevice) -> None:
         await self._disconnect_device(device.id)

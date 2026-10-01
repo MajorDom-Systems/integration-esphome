@@ -1,12 +1,77 @@
+"""Translation between ESPHome entities/states/commands and MajorDom parameters/values/commands."""
+
+import math
+from dataclasses import dataclass
+from enum import IntEnum
 from typing import Any
 
-from aioesphomeapi import COMPONENT_TYPE_TO_INFO, EntityInfo
-from majordom_integration_sdk.schemas.parameter import ParameterDataType, ParameterRole
+from aioesphomeapi import (
+    COMPONENT_TYPE_TO_INFO,
+    BinarySensorState,
+    ClimateInfo,
+    ClimateState,
+    CoverInfo,
+    CoverState,
+    EntityCategory,
+    EntityInfo,
+    EntityState,
+    FanState,
+    LightColorCapability,
+    LightInfo,
+    LightState,
+    NumberInfo,
+    NumberState,
+    SelectInfo,
+    SelectState,
+    SensorInfo,
+    SensorState,
+    SwitchState,
+    TextSensorState,
+)
+from majordom_integration_sdk.schemas.parameter import (
+    ParameterDataType,
+    ParameterRole,
+    ParameterUnit,
+    ParameterVisibility,
+)
 
+from .esphome_spec import get_unit
 from .models import ESPhomeComponentType, ESPhomeParameterType
 
 # The library's own registry covers every entity ESPHome knows; only the types in ESPhomeComponentType are mapped.
 _COMPONENT_BY_INFO: dict[type[EntityInfo], str] = {info: name for name, info in COMPONENT_TYPE_TO_INFO.items()}
+
+PERCENT = ParameterUnit.percentage  # MajorDom expresses levels, positions and colour channels as 0-100
+
+
+PARAMETER_TYPE: dict[ESPhomeComponentType, ESPhomeParameterType] = {
+    ESPhomeComponentType.SENSOR: ESPhomeParameterType.SENSOR,
+    ESPhomeComponentType.BINARY_SENSOR: ESPhomeParameterType.SENSOR,
+    ESPhomeComponentType.TEXT_SENSOR: ESPhomeParameterType.SENSOR,
+    ESPhomeComponentType.NUMBER: ESPhomeParameterType.NUMBER,
+    ESPhomeComponentType.SELECT: ESPhomeParameterType.SELECT,
+    ESPhomeComponentType.BUTTON: ESPhomeParameterType.BUTTON,
+}
+
+COVER_OPERATIONS = {
+    0: "IDLE",
+    1: "IS_OPENING",
+    2: "IS_CLOSING",
+}  # labels are the enum names, as in the other integrations
+
+
+@dataclass(frozen=True)
+class ParameterSpec:
+    """What one MajorDom parameter of an entity looks like (everything except identity)."""
+
+    sub_field: str
+    data_type: ParameterDataType
+    role: ParameterRole
+    unit: ParameterUnit = ParameterUnit.plain
+    min_value: float | None = None
+    max_value: float | None = None
+    min_step: float | None = None
+    valid_values: dict[int, str] | None = None
 
 
 def component_type_of(entity: EntityInfo) -> ESPhomeComponentType | None:
@@ -17,108 +82,118 @@ def component_type_of(entity: EntityInfo) -> ESPhomeComponentType | None:
         return None
 
 
-COMPONENT_TO_DATATYPE = {
-    ESPhomeComponentType.LIGHT: ParameterDataType.string,
-    ESPhomeComponentType.SWITCH: ParameterDataType.bool,
-    ESPhomeComponentType.SENSOR: ParameterDataType.decimal,
-    ESPhomeComponentType.BINARY_SENSOR: ParameterDataType.bool,
-    ESPhomeComponentType.NUMBER: ParameterDataType.decimal,
-    ESPhomeComponentType.SELECT: ParameterDataType.enum,
-    ESPhomeComponentType.BUTTON: ParameterDataType.none,
-    ESPhomeComponentType.COVER: ParameterDataType.enum,
-    ESPhomeComponentType.FAN: ParameterDataType.enum,
-    ESPhomeComponentType.CLIMATE: ParameterDataType.string,
-    ESPhomeComponentType.TEXT_SENSOR: ParameterDataType.string,
-}
-
-COMPONENT_TO_ROLE = {
-    ESPhomeComponentType.LIGHT: ParameterRole.control,
-    ESPhomeComponentType.SWITCH: ParameterRole.control,
-    ESPhomeComponentType.SENSOR: ParameterRole.sensor,
-    ESPhomeComponentType.BINARY_SENSOR: ParameterRole.sensor,
-    ESPhomeComponentType.NUMBER: ParameterRole.control,
-    ESPhomeComponentType.SELECT: ParameterRole.control,
-    ESPhomeComponentType.BUTTON: ParameterRole.control,
-    ESPhomeComponentType.COVER: ParameterRole.control,
-    ESPhomeComponentType.FAN: ParameterRole.control,
-    ESPhomeComponentType.CLIMATE: ParameterRole.control,
-    ESPhomeComponentType.TEXT_SENSOR: ParameterRole.sensor,
-}
-
-COMPONENT_TO_PARAMETER_TYPE = {
-    ESPhomeComponentType.LIGHT: ESPhomeParameterType.STATE,
-    ESPhomeComponentType.SWITCH: ESPhomeParameterType.STATE,
-    ESPhomeComponentType.SENSOR: ESPhomeParameterType.SENSOR,
-    ESPhomeComponentType.BINARY_SENSOR: ESPhomeParameterType.SENSOR,
-    ESPhomeComponentType.NUMBER: ESPhomeParameterType.NUMBER,
-    ESPhomeComponentType.SELECT: ESPhomeParameterType.SELECT,
-    ESPhomeComponentType.BUTTON: ESPhomeParameterType.BUTTON,
-    ESPhomeComponentType.COVER: ESPhomeParameterType.STATE,
-    ESPhomeComponentType.FAN: ESPhomeParameterType.STATE,
-    ESPhomeComponentType.CLIMATE: ESPhomeParameterType.STATE,
-    ESPhomeComponentType.TEXT_SENSOR: ESPhomeParameterType.SENSOR,
-}
-
-COMPONENT_SUB_FIELDS: dict[ESPhomeComponentType, list[tuple[str, ParameterDataType, ParameterRole]]] = {
-    ESPhomeComponentType.LIGHT: [
-        ("state", ParameterDataType.bool, ParameterRole.control),
-        ("brightness", ParameterDataType.decimal, ParameterRole.control),
-        ("color_r", ParameterDataType.decimal, ParameterRole.control),
-        ("color_g", ParameterDataType.decimal, ParameterRole.control),
-        ("color_b", ParameterDataType.decimal, ParameterRole.control),
-    ],
-    ESPhomeComponentType.COVER: [
-        ("position", ParameterDataType.decimal, ParameterRole.control),
-        ("operation", ParameterDataType.string, ParameterRole.sensor),
-    ],
-    ESPhomeComponentType.CLIMATE: [
-        ("mode", ParameterDataType.string, ParameterRole.control),
-        ("current_temperature", ParameterDataType.decimal, ParameterRole.sensor),
-        ("target_temperature", ParameterDataType.decimal, ParameterRole.control),
-    ],
-    ESPhomeComponentType.FAN: [
-        ("state", ParameterDataType.bool, ParameterRole.control),
-    ],
-}
+def visibility_of(entity: EntityInfo) -> ParameterVisibility:
+    if entity.disabled_by_default:
+        return ParameterVisibility.system
+    if entity.entity_category != EntityCategory.NONE:  # configuration and diagnostics
+        return ParameterVisibility.setting
+    return ParameterVisibility.user
 
 
-def get_sub_fields(component_type: ESPhomeComponentType) -> list[tuple[str, ParameterDataType, ParameterRole]]:
-    return COMPONENT_SUB_FIELDS.get(component_type, [])
+def parameter_specs(entity: EntityInfo, component: ESPhomeComponentType) -> list[ParameterSpec]:
+    control, sensor = ParameterRole.control, ParameterRole.sensor
+    decimal, boolean = ParameterDataType.decimal, ParameterDataType.bool
+    unit = get_unit(getattr(entity, "device_class", None), getattr(entity, "unit_of_measurement", None))
+
+    match component, entity:
+        case ESPhomeComponentType.SWITCH | ESPhomeComponentType.FAN, _:
+            return [ParameterSpec("state", boolean, control)]
+        case ESPhomeComponentType.BINARY_SENSOR, _:
+            return [ParameterSpec("state", boolean, sensor)]
+        case ESPhomeComponentType.TEXT_SENSOR, _:
+            return [ParameterSpec("state", ParameterDataType.string, sensor)]
+        case ESPhomeComponentType.SENSOR, SensorInfo():
+            return [ParameterSpec("state", decimal, sensor, unit)]
+        case ESPhomeComponentType.BUTTON, _:
+            return [ParameterSpec("state", ParameterDataType.none, control)]
+        case ESPhomeComponentType.NUMBER, NumberInfo():
+            return [
+                ParameterSpec("state", decimal, control, unit, entity.min_value, entity.max_value, entity.step or None)
+            ]
+        case ESPhomeComponentType.SELECT, SelectInfo():
+            options: dict[int, str] = dict(enumerate(entity.options))
+            return [ParameterSpec("state", ParameterDataType.enum, control, valid_values=options)]
+        case ESPhomeComponentType.LIGHT, LightInfo():
+            # ColorMode values are bit masks of LightColorCapability, e.g. 35 = ON_OFF | BRIGHTNESS | RGB
+            capabilities = 0
+            for mode in entity.supported_color_modes:
+                capabilities |= int(mode)
+            specs = [ParameterSpec("state", boolean, control)]
+            if capabilities & LightColorCapability.BRIGHTNESS:
+                specs.append(ParameterSpec("brightness", decimal, control, PERCENT, 0, 100))
+            if capabilities & LightColorCapability.RGB:
+                specs += [ParameterSpec(f"color_{c}", decimal, control, PERCENT, 0, 100) for c in "rgb"]
+            return specs
+        case ESPhomeComponentType.COVER, CoverInfo():
+            return [
+                ParameterSpec("position", decimal, control, PERCENT, 0, 100),
+                ParameterSpec("operation", ParameterDataType.enum, sensor, valid_values=COVER_OPERATIONS),
+            ]
+        case ESPhomeComponentType.CLIMATE, ClimateInfo():
+            celsius = ParameterUnit.celsius
+            low, high = entity.visual_min_temperature, entity.visual_max_temperature
+            step = entity.visual_target_temperature_step or None
+            modes: dict[int, str] = {int(mode): mode.name for mode in entity.supported_modes}
+            specs = [ParameterSpec("mode", ParameterDataType.enum, control, valid_values=modes)]
+            if entity.supports_current_temperature:
+                specs.append(ParameterSpec("current_temperature", decimal, sensor, celsius))
+            targets = ("target_temperature_low", "target_temperature_high")
+            if not entity.supports_two_point_target_temperature:
+                targets = ("target_temperature",)
+            return specs + [ParameterSpec(t, decimal, control, celsius, low, high, step) for t in targets]
+    return []
 
 
-def convert_entity_state(state_obj: Any, component_type: str) -> list[tuple[str, Any]]:
-    result: list[tuple[str, Any]] = []
+def _number(value: float | None) -> float | None:
+    return None if value is None or math.isnan(value) else float(value)
 
-    if component_type == "switch":
-        result.append(("state", state_obj.state))
-    elif component_type == "light":
-        result.append(("state", state_obj.state))
-        if hasattr(state_obj, "brightness") and state_obj.brightness is not None:
-            result.append(("brightness", state_obj.brightness))
-        if hasattr(state_obj, "red") and state_obj.red is not None:
-            result.append(("color_r", state_obj.red))
-            result.append(("color_g", state_obj.green))
-            result.append(("color_b", state_obj.blue))
-    elif component_type == "cover":
-        if hasattr(state_obj, "position") and state_obj.position is not None:
-            result.append(("position", state_obj.position))
-        if hasattr(state_obj, "current_operation") and state_obj.current_operation is not None:
-            result.append(("operation", state_obj.current_operation))
-    elif component_type in ("sensor", "binary_sensor", "number", "select", "text_sensor"):
-        result.append(("state", state_obj.state))
-    elif component_type == "climate":
-        if hasattr(state_obj, "mode") and state_obj.mode is not None:
-            result.append(("mode", state_obj.mode))
-        if hasattr(state_obj, "current_temperature") and state_obj.current_temperature is not None:
-            result.append(("current_temperature", state_obj.current_temperature))
-        if hasattr(state_obj, "target_temperature") and state_obj.target_temperature is not None:
-            result.append(("target_temperature", state_obj.target_temperature))
-    elif component_type == "fan":
-        result.append(("state", state_obj.state))
-    else:
-        result.append(("state", state_obj))
 
-    return result
+def _percent(value: float | None) -> float | None:
+    """ESPHome levels are 0-1."""
+    number = _number(value)
+    return None if number is None else round(number * 100, 2)
+
+
+def _index(value: IntEnum | None) -> int | None:
+    return None if value is None else int(value)
+
+
+def state_values(entity: EntityInfo, state: EntityState) -> dict[str, Any]:
+    """Current values by sub-field, as plain Python values of the type the parameters declare."""
+    values: dict[str, Any]
+    match state:
+        case _ if getattr(state, "missing_state", False):
+            values = {}
+        case LightState():
+            values = {
+                "state": bool(state.state),
+                "brightness": _percent(state.brightness),
+                "color_r": _percent(state.red),
+                "color_g": _percent(state.green),
+                "color_b": _percent(state.blue),
+            }
+        case CoverState():
+            values = {"position": _percent(state.position), "operation": _index(state.current_operation)}
+        case ClimateState():
+            values = {
+                "mode": _index(state.mode),
+                "current_temperature": _number(state.current_temperature),
+                "target_temperature": _number(state.target_temperature),
+                "target_temperature_low": _number(state.target_temperature_low),
+                "target_temperature_high": _number(state.target_temperature_high),
+            }
+        case SelectState():
+            options = entity.options if isinstance(entity, SelectInfo) else []
+            values = {"state": options.index(state.state) if state.state in options else None}
+        case SensorState() | NumberState():
+            values = {"state": _number(state.state)}
+        case TextSensorState():
+            values = {"state": str(state.state)}
+        case SwitchState() | BinarySensorState() | FanState():
+            values = {"state": bool(state.state)}
+        case _:
+            values = {}
+    return {sub_field: value for sub_field, value in values.items() if value is not None}
 
 
 def build_command_args(
