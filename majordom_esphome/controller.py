@@ -41,6 +41,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
         self._discovery_data: dict[UUID, dict] = {}
         self._discovery_names: dict[str, UUID] = {}  # mDNS record name -> discovery id, for goodbyes
         self._zeroconf_cancel: Any | None = None
+        self._paired: set[UUID] = set()
         self._tasks: set[asyncio.Task[None]] = set()
         self._states: dict[UUID, dict[int, EntityState]] = {}
 
@@ -78,6 +79,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
             await connection.stop()
         self._connections.clear()
         self._states.clear()
+        self._paired.clear()
 
     # ZeroconfDiscoveryListener: called by the SDK's discovery service
 
@@ -103,6 +105,8 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
             properties = service_info.decoded_properties
             mac = properties.get("mac")
             device_id = self.device_uuid(mac or node_name)
+            if device_id in self._paired:
+                return
 
             server = service_info.server
             addresses = service_info.parsed_addresses or []
@@ -142,6 +146,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
         async with self.dependencies.make_device_repository() as repo:
             devices = await repo.get_all(ESPhomeDevice)
         for device in devices:
+            self._paired.add(device.id)
             self._connect(device)
 
     def _connect(self, device: ESPhomeDevice) -> None:
@@ -180,12 +185,6 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
         else:
             await self.dependencies.output.controller_did_lose_device(self, device_id)
 
-    async def _disconnect_device(self, device_id: UUID) -> None:
-        conn = self._connections.pop(device_id, None)
-        self._states.pop(device_id, None)
-        if conn:
-            await conn.stop()
-
     async def _update_device(self, device_id: UUID, **changes: Any) -> ESPhomeDevice | None:
         async with self.dependencies.make_device_repository() as repo:
             device = await repo.get(device_id, as_=ESPhomeDevice)
@@ -197,6 +196,8 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
             return device
 
     async def _on_state(self, device_id: UUID, entity: EntityInfo, state: EntityState) -> None:
+        if device_id not in self._connections:  # still pairing, or already unpaired: the Hub does not know the device
+            return
         try:
             self._states.setdefault(device_id, {})[state.key] = state
             events = self._events(device_id, entity, state)
@@ -220,6 +221,19 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
 
     def _parameter_id(self, device_id: UUID, entity: EntityInfo, sub_field: str) -> UUID:
         return self.parameter_uuid(device_id, f"{entity.object_id}_{sub_field}")
+
+    async def _report_snapshot(self, device_id: UUID) -> None:
+        """Report the last known value of every parameter in a single batch."""
+        connection = self._connections[device_id]
+        entities = connection.get_entities()
+        events = [
+            event
+            for key, state in self._states.get(device_id, {}).items()
+            if key in entities
+            for event in self._events(device_id, entities[key], state)
+        ]
+        if events:
+            await self.dependencies.output.controller_did_receive_events(self, events)
 
     async def pair_device(
         self,
@@ -280,11 +294,12 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
                 await repo.save(device)
 
             self._connections[discovery.id] = conn
-
-            await self.dependencies.output.controller_did_connect_device(self, discovery.id)
+            self._paired.add(discovery.id)
 
             self._discoveries.pop(discovery.id, None)
             self._discovery_data.pop(discovery.id, None)
+            await self.dependencies.output.controller_did_connect_device(self, discovery.id)
+            await self._report_snapshot(discovery.id)
 
         except Exception as exc:
             if conn is not None:
@@ -322,17 +337,22 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
         )
 
     async def unpair(self, device: ESPhomeDevice) -> None:
-        await self._disconnect_device(device.id)
+        connection = self._connections.pop(device.id, None)
+        self._states.pop(device.id, None)
+        self._paired.discard(device.id)
+        if connection:
+            await connection.stop()
         # The Hub removes the device record after unpair; the repository protocol
         # intentionally does not expose delete() to integrations.
 
     async def identify(self, device: ESPhomeDevice) -> None:
-        logger.info("Identify called for %s", device.id)
+        # ESPHome has no identify action, so there is nothing to send to the device
+        logger.info("Identify called for %s: not supported by ESPHome", device.id)
 
     async def fetch(self, device: ESPhomeDevice) -> None:
-        conn = self._connections.get(device.id)
-        if not conn:
+        if device.id not in self._connections:
             raise ConnectionError("Device not connected")
+        await self._report_snapshot(device.id)
 
     async def send_command(
         self,
