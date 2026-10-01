@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Coroutine
 from typing import Any
 from uuid import UUID
 
@@ -40,7 +41,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
         self._discovery_data: dict[UUID, dict] = {}
         self._discovery_names: dict[str, UUID] = {}  # mDNS record name -> discovery id, for goodbyes
         self._zeroconf_cancel: Any | None = None
-        self._lock = asyncio.Lock()
+        self._tasks: set[asyncio.Task[None]] = set()
         self._states: dict[UUID, dict[int, EntityState]] = {}
 
     @property
@@ -69,10 +70,14 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
             self._zeroconf_cancel()
             self._zeroconf_cancel = None
 
-        async with self._lock:
-            for conn in list(self._connections.values()):
-                await conn.stop()
-            self._connections.clear()
+        tasks = list(self._tasks)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        for connection in list(self._connections.values()):
+            await connection.stop()
+        self._connections.clear()
+        self._states.clear()
 
     # ZeroconfDiscoveryListener: called by the SDK's discovery service
 
@@ -135,49 +140,49 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
 
     async def _load_paired_devices(self) -> None:
         async with self.dependencies.make_device_repository() as repo:
-            for device in await repo.get_all(ESPhomeDevice):
-                asyncio.create_task(self._connect_device(device))
+            devices = await repo.get_all(ESPhomeDevice)
+        for device in devices:
+            self._connect(device)
 
-    async def _connect_device(self, device: ESPhomeDevice) -> None:
-        async with self._lock:
-            if device.id in self._connections:
-                return
+    def _connect(self, device: ESPhomeDevice) -> None:
+        data = device.integration_data
+        if data.address is None:
+            logger.error("Device %s has no address, skipping", device.id)
+            return
+        connection = self._make_connection(device.id, data.address, data.port, data.encryption_key)
+        self._connections[device.id] = connection
+        self._spawn(connection.start())
 
-            data = device.integration_data
-            if data.address is None:
-                logger.error("Device %s has no address, skipping", device.id)
-                return
+    def _make_connection(
+        self, device_id: UUID, address: str, port: int, encryption_key: str | None
+    ) -> ESPhomeDeviceConnection:
+        return ESPhomeDeviceConnection(
+            device_id=device_id,
+            address=address,
+            port=port,
+            encryption_key=encryption_key,
+            on_state=self._on_state,
+            on_availability=self._on_availability,
+        )
 
-            conn = ESPhomeDeviceConnection(
-                device_id=device.id,
-                address=data.address,
-                port=data.port,
-                encryption_key=data.encryption_key,
-                on_state=self._on_state,
-            )
-            self._connections[device.id] = conn
+    def _spawn(self, coroutine: Coroutine[Any, Any, None]) -> None:
+        """Run in the background, keeping a reference so the task is neither collected nor left behind on stop()."""
+        task = asyncio.create_task(coroutine)
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
 
-        try:
-            await conn.start()
-            await conn.wait_ready()
-            await self.dependencies.output.controller_did_connect_device(self, device.id)
-            device.available = True
-            device.last_error = None
-            async with self.dependencies.make_device_repository() as repo:
-                await repo.save(device)
-        except Exception as exc:
-            logger.error("Failed to connect to %s: %s", data.address, exc)
-            device.available = False
-            device.last_error = str(exc)
-            async with self._lock:
-                self._connections.pop(device.id, None)
-            async with self.dependencies.make_device_repository() as repo:
-                await repo.save(device)
+    async def _on_availability(self, device_id: UUID, available: bool, reason: str | None) -> None:
+        if device_id not in self._connections:  # still pairing, or already unpaired
+            return
+        await self._update_device(device_id, available=available, last_error=None if available else reason)
+        if available:
+            await self.dependencies.output.controller_did_connect_device(self, device_id)
+        else:
+            await self.dependencies.output.controller_did_lose_device(self, device_id)
 
     async def _disconnect_device(self, device_id: UUID) -> None:
-        async with self._lock:
-            conn = self._connections.pop(device_id, None)
-            self._states.pop(device_id, None)
+        conn = self._connections.pop(device_id, None)
+        self._states.pop(device_id, None)
         if conn:
             await conn.stop()
 
@@ -237,13 +242,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
             address = integration_data["address"]
             port = integration_data["port"]
 
-            conn = ESPhomeDeviceConnection(
-                device_id=discovery.id,
-                address=address,
-                port=port,
-                encryption_key=encryption_key,
-                on_state=self._on_state,
-            )
+            conn = self._make_connection(discovery.id, address, port, encryption_key)
             await conn.start()
             await conn.wait_ready()
 
@@ -280,8 +279,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
             async with self.dependencies.make_device_repository() as repo:
                 await repo.save(device)
 
-            async with self._lock:
-                self._connections[discovery.id] = conn
+            self._connections[discovery.id] = conn
 
             await self.dependencies.output.controller_did_connect_device(self, discovery.id)
 

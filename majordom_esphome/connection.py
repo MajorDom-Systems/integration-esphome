@@ -2,7 +2,7 @@ import asyncio
 import contextlib
 import logging
 from collections.abc import Awaitable, Callable
-from typing import Any
+from uuid import UUID
 
 from aioesphomeapi import (
     APIClient,
@@ -15,7 +15,13 @@ from aioesphomeapi import (
 
 logger = logging.getLogger(__name__)
 
+CONNECT_TIMEOUT = 15.0  # seconds, for one connection attempt including the entity list
 WAIT_READY_TIMEOUT = 30.0
+RECONNECT_DELAY_FIRST = 1.0
+RECONNECT_DELAY_MAX = 30.0
+
+StateCallback = Callable[[UUID, EntityInfo, EntityState], Awaitable[None]]
+AvailabilityCallback = Callable[[UUID, bool, str | None], Awaitable[None]]  # (device id, available, reason if not)
 
 
 def describe_error(exc: BaseException) -> str:
@@ -30,116 +36,54 @@ def describe_error(exc: BaseException) -> str:
 
 
 class ESPhomeDeviceConnection:
+    """One device's native-API session: connects, keeps reconnecting with backoff, and feeds states to a callback."""
+
     def __init__(
         self,
-        device_id: Any,
+        device_id: UUID,
         address: str,
         port: int,
         encryption_key: str | None,
-        on_state: Callable[[Any, EntityInfo, EntityState], Awaitable[None]],
-    ):
+        on_state: StateCallback,
+        on_availability: AvailabilityCallback | None = None,
+    ) -> None:
         self.device_id = device_id
         self.address = address
         self.port = port
         self.encryption_key = encryption_key
         self.on_state_callback = on_state
+        self.on_availability_callback = on_availability
 
-        self._client: APIClient | None = None
-        self._task: asyncio.Task | None = None
-        self._entities: dict[int, EntityInfo] = {}
         self.last_error: Exception | None = None
+        self._client: APIClient | None = None
+        self._task: asyncio.Task[None] | None = None
+        self._consumer: asyncio.Task[None] | None = None
+        self._entities: dict[int, EntityInfo] = {}
+        self._states: asyncio.Queue[EntityState] = asyncio.Queue()
         self._ready = asyncio.Event()
         self._failed = asyncio.Event()
-        self._expected_disconnect = False
-        self._stopped = False
-        self._disconnect_event = asyncio.Event()
-        self._disconnect_event.set()
+        self._disconnected = asyncio.Event()
+        self._available: bool | None = None  # what the callback was last told
 
-    async def start(self):
+    @property
+    def ready(self) -> bool:
+        return self._ready.is_set()
+
+    async def start(self) -> None:
         self._failed.clear()
         self.last_error = None
-        self._stopped = False
-        self._expected_disconnect = False
-        self._disconnect_event.clear()
+        self._consumer = asyncio.create_task(self._consume_states())
         self._task = asyncio.create_task(self._run())
 
-    async def stop(self):
-        self._stopped = True
-        self._expected_disconnect = True
-        if self._task:
-            self._task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._task
-        if self._client:
-            await self._client.disconnect()
-
-    async def _on_stop(self, expected_disconnect: bool):
-        logger.info(
-            "Device %s disconnected (expected=%s)",
-            self.device_id,
-            expected_disconnect,
-        )
+    async def stop(self) -> None:
+        for task in (self._task, self._consumer):
+            if task is not None:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+        self._task = self._consumer = None
+        await self._close_client()
         self._ready.clear()
-        self._disconnect_event.set()
-        if not expected_disconnect and not self._expected_disconnect:
-            logger.warning("Unexpected disconnect from %s", self.device_id)
-
-    async def _run(self):
-        while not self._stopped:
-            try:
-                await self._connect_and_listen()
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                logger.error(
-                    "Connection to %s lost: %s, reconnecting in 5s",
-                    self.address,
-                    e,
-                )
-                self.last_error = e
-                self._ready.clear()
-                self._failed.set()
-                await asyncio.sleep(5)
-
-    async def _connect_and_listen(self):
-        self._client = APIClient(
-            address=self.address,
-            port=self.port,
-            noise_psk=self.encryption_key,
-            password=None,
-        )
-        await self._client.connect(login=True, on_stop=self._on_stop)
-        logger.info(
-            "Connected to ESPHome device %s at %s:%s",
-            self.device_id,
-            self.address,
-            self.port,
-        )
-
-        entities, _services = await self._client.list_entities_services()
-        self._entities.clear()
-        for ent in entities:
-            if isinstance(ent, EntityInfo) and hasattr(ent, "key") and hasattr(ent, "name"):
-                self._entities[ent.key] = ent
-
-        self._ready.set()
-
-        def state_callback(state: EntityState):
-            asyncio.create_task(self._handle_state(state))
-
-        client = self._client
-        if client is not None:
-            client.subscribe_states(state_callback)  # synchronous: awaiting None raised and dropped the connection
-        else:
-            logger.error("Client is None, cannot subscribe to states")
-
-        await self._disconnect_event.wait()
-
-    async def _handle_state(self, state: EntityState):
-        entity = self._entities.get(state.key)
-        if not entity:
-            return
-        await self.on_state_callback(self.device_id, entity, state)
 
     async def wait_ready(self, timeout: float = WAIT_READY_TIMEOUT) -> None:
         """Wait for the first successful connection; fail as soon as an attempt fails (no endless retrying)."""
@@ -158,11 +102,7 @@ class ESPhomeDeviceConnection:
     def get_entities(self) -> dict[int, EntityInfo]:
         return self._entities.copy()
 
-    @property
-    def ready(self) -> bool:
-        return self._ready.is_set()
-
-    async def send_command(self, entity_key: int, component_type: str, command_args: dict):
+    async def send_command(self, entity_key: int, component_type: str, command_args: dict) -> None:
         if self._client is None or not self.ready:
             raise ConnectionError("Device not connected")
         method = getattr(self._client, f"{component_type}_command", None)
@@ -172,3 +112,75 @@ class ESPhomeDeviceConnection:
             method(**command_args)  # fire-and-forget: the device answers with a state update
         except APIConnectionError as exc:
             raise ConnectionError("Device not connected") from exc
+
+    async def _run(self) -> None:
+        delay = RECONNECT_DELAY_FIRST
+        while True:
+            try:
+                await self._connect()
+                delay = RECONNECT_DELAY_FIRST
+                await self._disconnected.wait()
+                raise ConnectionError("connection lost")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("Connection to %s (%s:%s) failed: %r", self.device_id, self.address, self.port, exc)
+                self.last_error = exc
+                self._ready.clear()
+                self._failed.set()
+                await self._close_client()
+                await self._report_availability(False, describe_error(exc))
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, RECONNECT_DELAY_MAX)
+
+    async def _connect(self) -> None:
+        self._disconnected.clear()
+        async with asyncio.timeout(CONNECT_TIMEOUT):
+            await self._connect_to(self.address)
+        await self._report_availability(True, None)
+
+    async def _connect_to(self, address: str) -> None:
+        client = APIClient(address, self.port, None, noise_psk=self.encryption_key)
+        self._client = client
+        await client.connect(login=True, on_stop=self._on_stop)
+        entities, _services = await client.list_entities_services()
+        self._entities = {entity.key: entity for entity in entities}
+        client.subscribe_states(self._state_received)
+        self.last_error = None
+        self._ready.set()
+        logger.info("Connected to ESPHome device %s at %s:%s", self.device_id, address, self.port)
+
+    async def _on_stop(self, expected_disconnect: bool) -> None:
+        logger.info("Device %s disconnected (expected=%s)", self.device_id, expected_disconnect)
+        self._ready.clear()
+        self._disconnected.set()
+
+    def _state_received(self, state: EntityState) -> None:
+        self._states.put_nowait(state)
+
+    async def _consume_states(self) -> None:
+        """Deliver states one at a time, in the order the device sent them."""
+        while True:
+            state = await self._states.get()
+            entity = self._entities.get(state.key)
+            if entity is None:
+                continue
+            try:
+                await self.on_state_callback(self.device_id, entity, state)
+            except Exception:
+                logger.exception("Error handling state of %s on %s", entity.name, self.device_id)
+
+    async def _report_availability(self, available: bool, reason: str | None) -> None:
+        if self.on_availability_callback is None or self._available == available:
+            return
+        self._available = available
+        try:
+            await self.on_availability_callback(self.device_id, available, reason)
+        except Exception:
+            logger.exception("Error reporting availability of %s", self.device_id)
+
+    async def _close_client(self) -> None:
+        client, self._client = self._client, None
+        if client is not None:
+            with contextlib.suppress(Exception):
+                await client.disconnect()
