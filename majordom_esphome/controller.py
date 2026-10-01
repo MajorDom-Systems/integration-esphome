@@ -247,23 +247,26 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
             ]
             main = next((p.id for p in parameters if p.can_be_main_parameter and p.role == "control"), None)
 
-            device = ESPhomeDevice(
-                id=discovery.id,
-                name=discovery.device_name,
-                integration=self.name,
-                available=True,
-                parameters=parameters,
-                main_parameter=main,
-                room_id=discovery.id,
-                transport=getattr(discovery, "transport", "tcp"),
-                manufacturer=getattr(discovery, "device_manufacturer", "esphome"),
-                integration_data=ESPhomeDeviceIntegrationData(
-                    device_name=discovery.device_name,
-                    unique_id=str(discovery.id),
-                    address=address,
-                    port=port,
-                    encryption_key=encryption_key,
-                ),
+            async with self.dependencies.make_device_repository() as repo:
+                hub_device = await repo.get(
+                    discovery.id, as_=ESPhomeDevice
+                )  # the Hub creates the device before pairing
+            if hub_device is None:
+                raise LookupError("The Hub has not created a device for this discovery")
+            device = hub_device.model_copy(
+                update={
+                    "parameters": parameters,
+                    "main_parameter": main,
+                    "available": True,
+                    "last_error": None,
+                    "integration_data": ESPhomeDeviceIntegrationData(
+                        device_name=discovery.device_name,
+                        unique_id=str(discovery.id),
+                        address=address,
+                        port=port,
+                        encryption_key=encryption_key,
+                    ),
+                }
             )
 
             async with self.dependencies.make_device_repository() as repo:
