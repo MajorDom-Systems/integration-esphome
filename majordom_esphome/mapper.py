@@ -1,6 +1,7 @@
 """Translation between ESPHome entities/states/commands and MajorDom parameters/values/commands."""
 
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import IntEnum
 from typing import Any
@@ -9,6 +10,7 @@ from aioesphomeapi import (
     COMPONENT_TYPE_TO_INFO,
     BinarySensorState,
     ClimateInfo,
+    ClimateMode,
     ClimateState,
     CoverInfo,
     CoverState,
@@ -36,7 +38,7 @@ from majordom_integration_sdk.schemas.parameter import (
 )
 
 from .esphome_spec import get_unit
-from .models import ESPhomeComponentType, ESPhomeParameterType
+from .models import ESPhomeComponentType, ESPhomeParameter, ESPhomeParameterType
 
 # The library's own registry covers every entity ESPHome knows; only the types in ESPhomeComponentType are mapped.
 _COMPONENT_BY_INFO: dict[type[EntityInfo], str] = {info: name for name, info in COMPONENT_TYPE_TO_INFO.items()}
@@ -196,69 +198,63 @@ def state_values(entity: EntityInfo, state: EntityState) -> dict[str, Any]:
     return {sub_field: value for sub_field, value in values.items() if value is not None}
 
 
-def build_command_args(
-    component_type: str,
-    entity_key: int,
-    sub_field: str | None,
-    value: Any,
-    current_state: dict[str, Any],
-) -> dict:
-    kwargs: dict[str, Any] = {"key": entity_key}
+def _as_bool(value: Any) -> bool:
+    if value not in (True, False):  # also accepts 0 and 1
+        raise ValueError(f"Expected a boolean, got {value!r}")
+    return bool(value)
 
-    if component_type == "switch":
-        kwargs["state"] = bool(value)
-    elif component_type == "light":
-        if sub_field == "state":
-            kwargs["state"] = bool(value)
-        elif sub_field == "brightness":
-            kwargs["brightness"] = float(value)
-        elif sub_field in ("color_r", "color_g", "color_b"):
-            r = value if sub_field == "color_r" else current_state.get("color_r", 0)
-            g = value if sub_field == "color_g" else current_state.get("color_g", 0)
-            b = value if sub_field == "color_b" else current_state.get("color_b", 0)
-            kwargs["red"] = float(r) / 255.0
-            kwargs["green"] = float(g) / 255.0
-            kwargs["blue"] = float(b) / 255.0
-        else:
-            if isinstance(value, dict):
-                if "state" in value:
-                    kwargs["state"] = value["state"] == "ON"
-                if "brightness" in value:
-                    kwargs["brightness"] = value["brightness"]
-                if "color" in value and isinstance(value["color"], dict):
-                    kwargs["red"] = value["color"].get("r", 0) / 255.0
-                    kwargs["green"] = value["color"].get("g", 0) / 255.0
-                    kwargs["blue"] = value["color"].get("b", 0) / 255.0
-            else:
-                kwargs["state"] = bool(value)
-    elif component_type == "cover":
-        if sub_field == "position":
-            kwargs["position"] = float(value)
-        elif sub_field == "operation":
-            kwargs["operation"] = str(value)
-        elif isinstance(value, dict):
-            kwargs.update(value)
-        else:
-            kwargs["position"] = 1.0 if value == "OPEN" else 0.0
-    elif component_type == "number":
-        kwargs["state"] = float(value)
-    elif component_type == "select":
-        kwargs["state"] = str(value)
-    elif component_type == "button":
-        pass
-    elif component_type == "fan":
-        if sub_field == "state":
-            kwargs["state"] = bool(value)
-        elif isinstance(value, bool):
-            kwargs["state"] = value
-        elif isinstance(value, dict):
-            kwargs.update(value)
-    elif component_type == "climate":
-        if sub_field == "mode":
-            kwargs["mode"] = str(value)
-        elif sub_field == "target_temperature":
-            kwargs["target_temperature"] = float(value)
-        elif isinstance(value, dict):
-            kwargs.update(value)
 
-    return kwargs
+def _as_number(value: Any, parameter: ESPhomeParameter) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Expected a number, got {value!r}") from exc
+    low, high = parameter.min_value, parameter.max_value
+    if (low is not None and number < low) or (high is not None and number > high):
+        raise ValueError(f"{parameter.name}: {number} is outside {low}..{high}")
+    return number
+
+
+def build_command_args(parameter: ESPhomeParameter, value: Any, states: Mapping[int, EntityState]) -> dict[str, Any]:
+    """Keyword arguments of the `aioesphomeapi` `<component>_command` method that applies `value`."""
+    if parameter.role != ParameterRole.control:
+        raise ValueError(f"{parameter.name} is read-only")
+    data = parameter.integration_data
+    sub_field = data.sub_field
+    assert data.service_key is not None
+    args: dict[str, Any] = {"key": data.service_key}
+
+    match data.component_type, sub_field:
+        case ESPhomeComponentType.SWITCH | ESPhomeComponentType.FAN, _:
+            args["state"] = _as_bool(value)
+        case ESPhomeComponentType.LIGHT, "state":
+            args["state"] = _as_bool(value)
+        case ESPhomeComponentType.LIGHT, "brightness":
+            args["brightness"] = _as_number(value, parameter) / 100
+        case ESPhomeComponentType.LIGHT, "color_r" | "color_g" | "color_b":
+            current = states.get(data.service_key)
+            channels = [0.0, 0.0, 0.0]
+            if isinstance(current, LightState):
+                channels = [current.red, current.green, current.blue]
+            channels["rgb".index(sub_field[-1])] = _as_number(value, parameter) / 100
+            args["rgb"] = tuple(channels)
+        case ESPhomeComponentType.COVER, "position":
+            args["position"] = _as_number(value, parameter) / 100
+        case ESPhomeComponentType.NUMBER, _:
+            args["state"] = _as_number(value, parameter)
+        case ESPhomeComponentType.SELECT, _:
+            options = parameter.valid_values or {}
+            if value not in options:
+                raise ValueError(f"{parameter.name}: no option {value!r}")
+            args["state"] = options[value]
+        case ESPhomeComponentType.BUTTON, _:
+            pass
+        case ESPhomeComponentType.CLIMATE, "mode":
+            if value not in (parameter.valid_values or {}):
+                raise ValueError(f"{parameter.name}: unsupported mode {value!r}")
+            args["mode"] = ClimateMode(value)
+        case ESPhomeComponentType.CLIMATE, str() as target if target.startswith("target_temperature"):
+            args[target] = _as_number(value, parameter)
+        case _:
+            raise ValueError(f"{parameter.name} cannot be set")
+    return args

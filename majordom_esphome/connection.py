@@ -4,7 +4,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from aioesphomeapi import APIClient, EntityInfo, EntityState
+from aioesphomeapi import APIClient, APIConnectionError, EntityInfo, EntityState
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +103,7 @@ class ESPhomeDeviceConnection:
 
         client = self._client
         if client is not None:
-            await client.subscribe_states(state_callback)  # type: ignore
+            client.subscribe_states(state_callback)  # synchronous: awaiting None raised and dropped the connection
         else:
             logger.error("Client is None, cannot subscribe to states")
 
@@ -121,11 +121,17 @@ class ESPhomeDeviceConnection:
     def get_entities(self) -> dict[int, EntityInfo]:
         return self._entities.copy()
 
+    @property
+    def ready(self) -> bool:
+        return self._ready.is_set()
+
     async def send_command(self, entity_key: int, component_type: str, command_args: dict):
-        if not self._client:
+        if self._client is None or not self.ready:
             raise ConnectionError("Device not connected")
-        method_name = f"{component_type}_command"
-        method = getattr(self._client, method_name, None)
-        if not method:
+        method = getattr(self._client, f"{component_type}_command", None)
+        if method is None:
             raise ValueError(f"Unknown component type: {component_type}")
-        await method(**command_args)
+        try:
+            method(**command_args)  # fire-and-forget: the device answers with a state update
+        except APIConnectionError as exc:
+            raise ConnectionError("Device not connected") from exc

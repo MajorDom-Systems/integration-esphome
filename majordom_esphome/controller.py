@@ -41,7 +41,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
         self._discovery_names: dict[str, UUID] = {}  # mDNS record name -> discovery id, for goodbyes
         self._zeroconf_cancel: Any | None = None
         self._lock = asyncio.Lock()
-        self._state_cache: dict[UUID, dict[str, Any]] = {}
+        self._states: dict[UUID, dict[int, EntityState]] = {}
 
     @property
     def discoveries(self) -> dict[UUID, Discovery]:
@@ -179,12 +179,23 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
     async def _disconnect_device(self, device_id: UUID) -> None:
         async with self._lock:
             conn = self._connections.pop(device_id, None)
-            self._state_cache.pop(device_id, None)
+            self._states.pop(device_id, None)
         if conn:
             await conn.stop()
 
+    async def _update_device(self, device_id: UUID, **changes: Any) -> ESPhomeDevice | None:
+        async with self.dependencies.make_device_repository() as repo:
+            device = await repo.get(device_id, as_=ESPhomeDevice)
+            if device is None:
+                return None
+            if any(getattr(device, field) != value for field, value in changes.items()):
+                device = device.model_copy(update=changes)
+                await repo.save(device)
+            return device
+
     async def _on_state(self, device_id: UUID, entity: EntityInfo, state: EntityState) -> None:
         try:
+            self._states.setdefault(device_id, {})[state.key] = state
             events = self._events(device_id, entity, state)
             if events:
                 await self.dependencies.output.controller_did_receive_events(self, events)
@@ -328,22 +339,16 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
         device: ESPhomeDevice,
         parameter: ESPhomeParameter,
     ) -> None:
-        conn = self._connections.get(device.id)
-        if not conn:
+        connection = self._connections.get(device.id)
+        if connection is None or not connection.ready:
+            await self._update_device(device.id, last_error=f"{parameter.name} could not be set: device not connected")
             raise ConnectionError("Device not connected")
 
-        entity_key = parameter.integration_data.service_key
-        if entity_key is None:
-            raise ValueError("Parameter has no service_key")
-        component_type = parameter.integration_data.component_type.value
-        sub_field = parameter.integration_data.sub_field
-
-        cache = self._state_cache.get(device.id, {})
-        command_args = mapper.build_command_args(
-            component_type=component_type,
-            entity_key=entity_key,
-            sub_field=sub_field,
-            value=command.value,
-            current_state=cache,
-        )
-        await conn.send_command(entity_key, component_type, command_args)
+        args = mapper.build_command_args(parameter, command.value, self._states.get(device.id, {}))
+        data = parameter.integration_data
+        try:
+            await connection.send_command(args["key"], data.component_type.value, args)
+        except ConnectionError:
+            await self._update_device(device.id, last_error=f"{parameter.name} could not be set: device not connected")
+            raise
+        await self._update_device(device.id, last_error=None)
