@@ -18,7 +18,8 @@ jobs:
     uses: ParkerIndustries/workflows/.github/workflows/test.yml@v1
     with:
       # The end-to-end tests run against virtual ESPHome devices, built (once) from tests/virtual/sketches
-      setup-script: pipx install esphome
+      # --prefer-binary: the newest dbus-fast (a Linux-only esphome dependency) has no wheel yet and fails to build
+      setup-script: pipx install esphome --pip-args="--prefer-binary"
     # Defaults to the team matrix ["3.12", "3.13"]. Uncomment to customize:
     # with:
     #   python-versions: '["3.12", "3.13", "3.14"]'
