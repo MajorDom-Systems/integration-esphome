@@ -181,6 +181,16 @@ enums become `enum` parameters labelled with their member names, fractions such 
 percentages, and a command-only flag (a valve's `stop`) becomes a button. Commands with several required arguments
 (a date) are read-only. A hand-written mapping wins wherever the generic result is not good enough for the user.
 
+### Entity catalogue
+
+`tests/test_catalogue.py` and `tests/virtual/catalogue.py` mirror the Matter integration's virtual-device catalogue.
+The list of entity kinds is whatever the installed `aioesphomeapi` knows. Fast checks (always run) fail when a kind is
+neither mapped by the integration nor skipped on purpose, or has neither a recipe nor a reason it cannot run on the
+host node. The sweep (`poetry run pytest -m catalogue`) builds one virtual node per kind in parallel, pairs it, reads
+its states, sends a valid command to every control parameter and checks that the connection survives and every value
+has the declared type. `.github/workflows/canary.yml` runs everything monthly against the latest ESPHome and
+`aioesphomeapi` and goes red when upstream adds something unsupported.
+
 ### Notes
 
 The device id derives from the node's MAC address (mDNS `mac` TXT record) via the SDK's UUID

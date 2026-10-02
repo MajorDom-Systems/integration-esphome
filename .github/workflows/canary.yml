@@ -1,0 +1,42 @@
+name: Entity catalogue canary
+
+# Monthly canary, modelled on the Matter integration's MVD canary.
+#
+# PURPOSE: catch ESPHome / aioesphomeapi changes this integration does not support yet. Each run installs the
+# LATEST releases (not the locked ones), builds one virtual node per entity kind the library knows, and runs the
+# whole suite plus the catalogue sweep (tests/test_catalogue.py). It goes RED when upstream ships something
+# unsupported: a new entity kind with no mapping or recipe (the fast checks fail), or new behaviour of an existing
+# one (the sweep fails). That is the signal to add support.
+
+on:
+  schedule:
+    - cron: "0 4 1 * *" # monthly
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the project
+        run: pipx install poetry && poetry install
+
+      - name: Upgrade to the latest ESPHome and aioesphomeapi
+        # --prefer-binary: the newest dbus-fast (a Linux-only esphome dependency) can lack a wheel for a while
+        run: |
+          pipx install esphome --pip-args="--prefer-binary"
+          poetry run pip install --upgrade aioesphomeapi
+          poetry run pip show aioesphomeapi | head -2
+          esphome version
+
+      - name: Whole suite and the catalogue sweep
+        # -m "" overrides the default `-m "not catalogue"`: the sweep builds a node per entity kind (in parallel)
+        run: poetry run pytest -m "" -v
