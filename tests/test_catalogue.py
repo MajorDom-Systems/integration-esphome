@@ -37,7 +37,8 @@ def test_every_kind_the_library_knows_is_mapped_or_skipped_on_purpose():
 
 
 def test_every_kind_the_library_knows_has_a_recipe_or_a_reason():
-    unexplained = [k for k in catalogue.all_kinds() if k not in catalogue.RECIPES and k not in catalogue.UNHOSTABLE]
+    recipe_kinds = {catalogue.kind_of(key) for key in catalogue.RECIPES}
+    unexplained = [k for k in catalogue.all_kinds() if k not in recipe_kinds and k not in catalogue.UNHOSTABLE]
 
     assert unexplained == [], (
         f"new entity kinds {unexplained}: write a recipe in catalogue.RECIPES (switch on every capability of the "
@@ -48,10 +49,11 @@ def test_every_kind_the_library_knows_has_a_recipe_or_a_reason():
 
 def test_the_catalogue_tables_agree():
     kinds = set(catalogue.all_kinds())
-    named = set(catalogue.RECIPES) | set(catalogue.UNHOSTABLE) | set(catalogue.EXPECTED) | set(catalogue.UNMAPPED)
+    named = {catalogue.kind_of(key) for key in (*catalogue.RECIPES, *catalogue.EXPECTED, *catalogue.UNMAPPED)}
+    named |= set(catalogue.UNHOSTABLE)
 
     assert named - kinds == set(), f"kinds the library no longer knows: {sorted(named - kinds)}"
-    assert set(catalogue.RECIPES) & set(catalogue.UNHOSTABLE) == set()
+    assert {catalogue.kind_of(key) for key in catalogue.RECIPES} & set(catalogue.UNHOSTABLE) == set()
     assert set(catalogue.EXPECTED) == set(catalogue.RECIPES), "every recipe needs its EXPECTED parameters, and back"
     assert set(catalogue.UNMAPPED) <= set(catalogue.RECIPES)
 
@@ -76,12 +78,13 @@ def sample_value(parameter: ESPhomeParameter) -> Any:
 
 @pytest.mark.catalogue
 @pytest.mark.timeout(120)
-@pytest.mark.parametrize("kind", catalogue.recipe_kinds())
+@pytest.mark.parametrize("recipe", catalogue.recipe_keys())
 async def test_every_entity_kind_works_end_to_end(
-    kind: str, controller: ESPhomeController, mdns: FakeMDNS, output, build_errors: dict[str, str | None]
+    recipe: str, controller: ESPhomeController, mdns: FakeMDNS, output, build_errors: dict[str, str | None]
 ):
-    assert build_errors.get(kind) is None, build_errors.get(kind)
-    sketch = catalogue.sketch_for(kind)
+    kind = catalogue.kind_of(recipe)
+    assert build_errors.get(recipe) is None, build_errors.get(recipe)
+    sketch = catalogue.sketch_for(recipe)
     node = VirtualDevice(sketch)
     await node.start()
     try:
@@ -99,12 +102,12 @@ async def test_every_entity_kind_works_end_to_end(
 
         # every parameter is the one the recipe's entity must produce ...
         actual = {p.integration_data.sub_field: (p.data_type, p.role) for p in device.parameters}
-        assert actual == catalogue.EXPECTED[kind]
+        assert actual == catalogue.EXPECTED[recipe]
 
         # ... and every field of the entity's state and command is either exposed or explained
         state, arguments = generic.api_fields(kind)
         unmapped = (state | arguments) - set(actual)
-        explained = set(catalogue.UNMAPPED.get(kind, {}))
+        explained = set(catalogue.UNMAPPED.get(recipe, {}))
         assert unmapped == explained, (
             f"{kind}: fields neither mapped nor explained in UNMAPPED: {sorted(unmapped - explained)}; "
             f"explained but now mapped or gone: {sorted(explained - unmapped)}"

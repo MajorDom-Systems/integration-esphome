@@ -253,6 +253,56 @@ climate:
     min_fanning_run_time: 1s
     min_fan_mode_switching_time: 1s
 """,
+    "light/rgbw": """\
+output:
+  - platform: template
+    id: out_r
+    type: float
+    write_action:
+      - logger.log: "r"
+  - platform: template
+    id: out_g
+    type: float
+    write_action:
+      - logger.log: "g"
+  - platform: template
+    id: out_b
+    type: float
+    write_action:
+      - logger.log: "b"
+  - platform: template
+    id: out_w
+    type: float
+    write_action:
+      - logger.log: "w"
+
+light:
+  - platform: rgbw
+    name: "Probe"
+    red: out_r
+    green: out_g
+    blue: out_b
+    white: out_w
+""",
+    "climate/single-point": """\
+sensor:
+  - platform: template
+    id: room
+    lambda: "return 21.5;"
+    update_interval: 1s
+
+climate:
+  - platform: thermostat
+    name: "Probe"
+    sensor: room
+    heat_action:
+      - logger.log: "heat"
+    idle_action:
+      - logger.log: "idle"
+    min_idle_time: 1s
+    min_heating_off_time: 1s
+    min_heating_run_time: 1s
+""",
     "date": """\
 datetime:
   - platform: template
@@ -359,6 +409,19 @@ EXPECTED: dict[str, dict[str, tuple[T, R]]] = {
         "current_humidity": (T.decimal, R.sensor),
         "target_humidity": (T.decimal, R.control),
     },
+    "light/rgbw": {
+        "state": (T.bool, R.control),
+        "brightness": (T.decimal, R.control),
+        "color_hue": (T.decimal, R.control),
+        "color_saturation": (T.decimal, R.control),
+        "white": (T.decimal, R.control),
+    },
+    "climate/single-point": {
+        "mode": (T.enum, R.control),
+        "action": (T.enum, R.sensor),
+        "current_temperature": (T.decimal, R.sensor),
+        "target_temperature": (T.decimal, R.control),
+    },
     "date": {"year": (T.integer, R.sensor), "month": (T.integer, R.sensor), "day": (T.integer, R.sensor)},
     "time": {"hour": (T.integer, R.sensor), "minute": (T.integer, R.sensor), "second": (T.integer, R.sensor)},
     "datetime": {"epoch_seconds": (T.integer, R.control)},
@@ -390,21 +453,53 @@ UNMAPPED: dict[str, dict[str, str]] = {
         "blue": "exposed as color_hue and color_saturation",
         "rgb": "exposed as color_hue and color_saturation",
         "color_mode": "derived from the capabilities the light reports",
-        "color_brightness": "the brightness of the colour part: brightness covers the common case",
+        "color_brightness": "not mapped yet: a setting, the brightness of the colour part",
         "cold_white": "the channel behind color_temperature",
         "warm_white": "the channel behind color_temperature",
-        "white": "only on RGBW lights: this recipe's light is RGBWW",
-        "flash_length": "a one-off option of a command, not a value",
-        "transition_length": "a one-off option of a command, not a value",
+        "white": "only on RGBW lights: the light/rgbw recipe covers it",
+        "flash_length": "not mapped yet: a setting applied to later commands",
+        "transition_length": "not mapped yet: a setting applied to later commands",
     },
     "climate": {
-        "target_temperature": "this thermostat is two-point: low and high are exposed instead",
+        "target_temperature": "two-point thermostat: low and high are exposed (climate/single-point covers the other)",
         "unused_legacy_away": "deprecated",
-        "custom_fan_mode": "the host thermostat platform has no custom fan modes",
+        "custom_fan_mode": "the host thermostat platform has none: tests/test_unhosted_fields.py covers it",
     },
-    "lock": {"code": "an argument of the command (the code to type), not a value of the entity"},
-    "alarm_control_panel": {"code": "an argument of the command (the code to type), not a value of the entity"},
+    "light/rgbw": {
+        **{f: "exposed as color_hue and color_saturation" for f in ("red", "green", "blue", "rgb")},
+        "color_mode": "derived from the capabilities the light reports",
+        "color_brightness": "not mapped yet: a setting, the brightness of the colour part",
+        "flash_length": "not mapped yet: a setting applied to later commands",
+        "transition_length": "not mapped yet: a setting applied to later commands",
+        **{f: "this light has no colour temperature or effects" for f in ("cold_white", "warm_white")},
+        "color_temperature": "this light has no colour temperature",
+        "effect": "this light has no effects",
+    },
+    "climate/single-point": {
+        "target_temperature_low": "this thermostat is single-point: target_temperature is exposed instead",
+        "target_temperature_high": "this thermostat is single-point: target_temperature is exposed instead",
+        "unused_legacy_away": "deprecated",
+        **{
+            f: "this thermostat does not support it"
+            for f in (
+                "fan_mode",
+                "swing_mode",
+                "preset",
+                "custom_preset",
+                "custom_fan_mode",
+                "current_humidity",
+                "target_humidity",
+            )
+        },
+    },
+    "lock": {"code": "not mapped yet: a setting holding the code the commands need"},
+    "alarm_control_panel": {"code": "not mapped yet: a setting holding the code the commands need"},
 }
+
+
+def kind_of(key: str) -> str:
+    """The entity kind of a recipe key: `light` and `light/rgbw` are both lights."""
+    return key.split("/")[0]
 
 
 def all_kinds() -> list[str]:
@@ -412,22 +507,22 @@ def all_kinds() -> list[str]:
     return list(COMPONENT_TYPE_TO_INFO)
 
 
-def sketch_for(kind: str) -> Sketch:
-    index = all_kinds().index(kind)
-    name = f"cat_{kind}"
+def sketch_for(key: str) -> Sketch:
+    index = list(RECIPES).index(key)
+    name = "cat_" + key.replace("/", "_").replace("-", "_")
     return Sketch(f"{name}.yaml", name, API_PORT, f"983569{index:06x}", directory=NODES_DIR)
 
 
-def recipe_kinds() -> list[str]:
-    """The kinds that have a recipe, in the library's order."""
-    return [kind for kind in all_kinds() if kind in RECIPES]
+def recipe_keys() -> list[str]:
+    """Every recipe: a kind's default one (`light`) and its variants (`light/rgbw`)."""
+    return list(RECIPES)
 
 
 def generate(kinds: list[str] | None = None) -> list[str]:
     """Write the node yaml of every kind that has a recipe; returns the kinds written."""
     NODES_DIR.mkdir(exist_ok=True)
     written = []
-    for kind in kinds or recipe_kinds():
+    for kind in kinds or recipe_keys():
         sketch = sketch_for(kind)
         body = RECIPES[kind]
         (NODES_DIR / sketch.yaml).write_text(
