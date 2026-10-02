@@ -481,7 +481,10 @@ UNMAPPED: dict[str, dict[str, str]] = {
         **{f: "exposed as color_hue and color_saturation" for f in ("red", "green", "blue", "rgb")},
         "color_mode": "derived from the capabilities the light reports",
         "flash_length": "exposed as the length of the flash command",
-        **{f: "this light has no colour temperature or effects" for f in ("cold_white", "warm_white")},
+        **{
+            f: "the channels behind a colour temperature, which this light has not"
+            for f in ("cold_white", "warm_white")
+        },
         "color_temperature": "this light has no colour temperature",
         "effect": "this light has no effects",
     },
@@ -505,8 +508,8 @@ UNMAPPED: dict[str, dict[str, str]] = {
     "lock": {"code": "only offered when the lock requires a code: tests/test_unhosted_fields.py covers it"},
     "water_heater": {
         "state": "exposed as on and away, the flags of this bit mask",
-        "target_temperature_low": "this water heater is single-point",
-        "target_temperature_high": "this water heater is single-point",
+        "target_temperature_low": "single-point: tests/test_unhosted_fields.py covers two-point",
+        "target_temperature_high": "single-point: tests/test_unhosted_fields.py covers two-point",
     },
 }
 

@@ -169,3 +169,15 @@ def test_water_heater_temperatures_are_in_celsius():
     for field in ("current_temperature", "target_temperature"):
         spec = spec_of(entity, field)
         assert spec is not None and spec.unit == ParameterUnit.celsius, field
+
+
+def test_a_two_point_water_heater_offers_low_and_high_targets_within_its_limits():
+    heater: Any = WaterHeaterInfo
+    entity = heater(
+        object_id="boiler", key=9, name="Boiler", supported_features=2 | 32, min_temperature=30.0, max_temperature=70.0
+    )  # target temperature, two-point
+
+    assert spec_of(entity, "target_temperature") is None
+    for field in ("target_temperature_low", "target_temperature_high"):
+        spec = spec_of(entity, field)
+        assert spec is not None and (spec.min_value, spec.max_value) == (30.0, 70.0), field
