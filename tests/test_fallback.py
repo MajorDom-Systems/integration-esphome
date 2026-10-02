@@ -5,6 +5,7 @@ without breaking pairing.
 """
 
 from collections.abc import AsyncIterator
+from typing import Any
 
 import pytest
 import pytest_asyncio
@@ -63,9 +64,8 @@ async def test_unmapped_entities_get_parameters_from_the_library_types(extras: E
         ("Label", "state"): (T.string, R.control),
         ("House Alarm", "state"): (T.enum, R.sensor),
         ("House Alarm", "command"): (T.enum, R.control),
-        ("Date", "year"): (T.integer, R.sensor),
-        ("Date", "month"): (T.integer, R.sensor),
-        ("Date", "day"): (T.integer, R.sensor),
+        ("House Alarm", "command_with_code"): (T.none, R.control),  # the panel requires a code
+        ("Date", "date"): (T.struct, R.control),  # year, month and day as its fields
     }  # the doorbell (an event) is skipped
 
 
@@ -133,3 +133,43 @@ async def test_invalid_generic_commands_are_rejected(
 ):
     with pytest.raises(ValueError):
         await send(controller, extras, entity, sub_field, value)
+
+
+def subs(parameter) -> dict[str, Any]:
+    """Sub-parameters by name."""
+    return {
+        sub.integration_data.sub_field: sub for sub in (type(parameter).model_validate(f) for f in parameter.fields)
+    }
+
+
+async def test_a_date_is_one_struct_value_set_and_reported_by_its_fields(
+    controller: ESPhomeController, extras: ESPhomeDevice, output
+):
+    date = param(extras, "Date", "date")
+    fields = subs(date)
+    value = {str(fields["year"].id): 2026, str(fields["month"].id): 10, str(fields["day"].id): 2}
+
+    await send(controller, extras, "Date", "date", value)
+
+    await wait_for_value(output, date, lambda v: v == value)
+    assert (fields["month"].min_value, fields["month"].max_value) == (1, 12)
+
+
+async def test_a_command_that_needs_a_code_takes_it_as_an_argument(
+    controller: ESPhomeController, extras: ESPhomeDevice, output
+):
+    command = param(extras, "House Alarm", "command_with_code")
+    fields = subs(command)
+
+    await send(
+        controller,
+        extras,
+        "House Alarm",
+        "command_with_code",
+        {
+            str(fields["command"].id): 1,  # ARM_AWAY
+            str(fields["code"].id): "1234",
+        },
+    )
+
+    await wait_for_value(output, param(extras, "House Alarm", "state"), lambda v: v != 0)  # no longer DISARMED

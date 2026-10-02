@@ -346,6 +346,13 @@ event:
 water_heater:
   - platform: template
     name: "Probe"
+    supported_modes: [ECO, ELECTRIC, PERFORMANCE]
+    # a lambda per feature switches it on; `{}` keeps the value commands set (optimistic)
+    current_temperature: "return 45.0;"
+    target_temperature: "return {};"
+    mode: "return {};"
+    away: "return {};"
+    is_on: "return {};"
 """,
 }
 
@@ -395,6 +402,9 @@ EXPECTED: dict[str, dict[str, tuple[T, R]]] = {
         "color_saturation": (T.decimal, R.control),
         "color_temperature": (T.decimal, R.control),
         "effect": (T.enum, R.control),
+        "color_brightness": (T.decimal, R.control),
+        "transition_length": (T.decimal, R.control),
+        "flash": (T.none, R.control),
     },
     "climate": {
         "mode": (T.enum, R.control),
@@ -415,6 +425,9 @@ EXPECTED: dict[str, dict[str, tuple[T, R]]] = {
         "color_hue": (T.decimal, R.control),
         "color_saturation": (T.decimal, R.control),
         "white": (T.decimal, R.control),
+        "color_brightness": (T.decimal, R.control),
+        "transition_length": (T.decimal, R.control),
+        "flash": (T.none, R.control),
     },
     "climate/single-point": {
         "mode": (T.enum, R.control),
@@ -422,20 +435,21 @@ EXPECTED: dict[str, dict[str, tuple[T, R]]] = {
         "current_temperature": (T.decimal, R.sensor),
         "target_temperature": (T.decimal, R.control),
     },
-    "date": {"year": (T.integer, R.sensor), "month": (T.integer, R.sensor), "day": (T.integer, R.sensor)},
-    "time": {"hour": (T.integer, R.sensor), "minute": (T.integer, R.sensor), "second": (T.integer, R.sensor)},
+    "date": {"date": (T.struct, R.control)},  # year, month, day as its fields
+    "time": {"time": (T.struct, R.control)},  # hour, minute, second as its fields
     "datetime": {"epoch_seconds": (T.integer, R.control)},
-    "alarm_control_panel": {"state": (T.enum, R.sensor), "command": (T.enum, R.control)},
+    "alarm_control_panel": {
+        "state": (T.enum, R.sensor),
+        "command": (T.enum, R.control),
+        "command_with_code": (T.none, R.control),  # command and code as its fields: this panel requires a code
+    },
     "event": {},  # one-shot events have no parameters yet
     "water_heater": {
-        "state": (T.integer, R.sensor),  # a bit mask of flags, shown as is
+        "on": (T.bool, R.control),  # a flag of the state bit mask
+        "away": (T.bool, R.control),
         "mode": (T.enum, R.control),
         "current_temperature": (T.decimal, R.sensor),
         "target_temperature": (T.decimal, R.control),
-        "target_temperature_low": (T.decimal, R.control),
-        "target_temperature_high": (T.decimal, R.control),
-        "on": (T.none, R.control),  # a command-only flag: a button, although it is really a switch
-        "away": (T.none, R.control),
     },
 }
 
@@ -453,12 +467,10 @@ UNMAPPED: dict[str, dict[str, str]] = {
         "blue": "exposed as color_hue and color_saturation",
         "rgb": "exposed as color_hue and color_saturation",
         "color_mode": "derived from the capabilities the light reports",
-        "color_brightness": "not mapped yet: a setting, the brightness of the colour part",
         "cold_white": "the channel behind color_temperature",
         "warm_white": "the channel behind color_temperature",
         "white": "only on RGBW lights: the light/rgbw recipe covers it",
-        "flash_length": "not mapped yet: a setting applied to later commands",
-        "transition_length": "not mapped yet: a setting applied to later commands",
+        "flash_length": "exposed as the length of the flash command",
     },
     "climate": {
         "target_temperature": "two-point thermostat: low and high are exposed (climate/single-point covers the other)",
@@ -468,9 +480,7 @@ UNMAPPED: dict[str, dict[str, str]] = {
     "light/rgbw": {
         **{f: "exposed as color_hue and color_saturation" for f in ("red", "green", "blue", "rgb")},
         "color_mode": "derived from the capabilities the light reports",
-        "color_brightness": "not mapped yet: a setting, the brightness of the colour part",
-        "flash_length": "not mapped yet: a setting applied to later commands",
-        "transition_length": "not mapped yet: a setting applied to later commands",
+        "flash_length": "exposed as the length of the flash command",
         **{f: "this light has no colour temperature or effects" for f in ("cold_white", "warm_white")},
         "color_temperature": "this light has no colour temperature",
         "effect": "this light has no effects",
@@ -492,8 +502,12 @@ UNMAPPED: dict[str, dict[str, str]] = {
             )
         },
     },
-    "lock": {"code": "not mapped yet: a setting holding the code the commands need"},
-    "alarm_control_panel": {"code": "not mapped yet: a setting holding the code the commands need"},
+    "lock": {"code": "only offered when the lock requires a code: tests/test_unhosted_fields.py covers it"},
+    "water_heater": {
+        "state": "exposed as on and away, the flags of this bit mask",
+        "target_temperature_low": "this water heater is single-point",
+        "target_temperature_high": "this water heater is single-point",
+    },
 }
 
 

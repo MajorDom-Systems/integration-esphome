@@ -78,25 +78,37 @@ async def wait_for_value(
 
 
 def assert_values_match_parameters(output: RecordingControllerOutput, device: ESPhomeDevice) -> None:
-    """Every reported value has exactly the plain type its parameter declares (no IntEnums, protobuf objects, ...)."""
+    """Every reported value has exactly the plain type its parameter declares (no IntEnums, protobuf objects, ...).
+
+    A `struct` value is a dict keyed by its sub-parameter ids (as the SDK specifies), each value of its sub-type.
+    """
+    parameters = {p.id: p for p in device.parameters}
+    for event in changes(output):
+        assert event.parameter_id in parameters, f"event for unknown parameter {event.parameter_id}"
+        _assert_value_type(parameters[event.parameter_id], event.value)
+
+
+def _assert_value_type(parameter: ESPhomeParameter, value: Any) -> None:
     expected: dict[ParameterDataType, tuple[type, ...]] = {
         ParameterDataType.bool: (bool,),
         ParameterDataType.integer: (int,),
         ParameterDataType.decimal: (float,),
         ParameterDataType.enum: (int,),
         ParameterDataType.string: (str,),
+        ParameterDataType.struct: (dict,),
     }
-    parameters = {p.id: p for p in device.parameters}
-    for event in changes(output):
-        assert event.parameter_id in parameters, f"event for unknown parameter {event.parameter_id}"
-        parameter = parameters[event.parameter_id]
-        assert type(event.value) in expected[parameter.data_type], (
-            f"{parameter.name}: {type(event.value).__name__} {event.value!r} is not {parameter.data_type}"
+    assert type(value) in expected[parameter.data_type], (
+        f"{parameter.name}: {type(value).__name__} {value!r} is not {parameter.data_type}"
+    )
+    if parameter.data_type == ParameterDataType.enum:
+        assert parameter.valid_values and value in parameter.valid_values, (
+            f"{parameter.name}: {value!r} not in {parameter.valid_values}"
         )
-        if parameter.data_type == ParameterDataType.enum:
-            assert parameter.valid_values and event.value in parameter.valid_values, (
-                f"{parameter.name}: {event.value!r} not in {parameter.valid_values}"
-            )
+    if parameter.data_type == ParameterDataType.struct:
+        subs = {str(sub.id): sub for sub in (ESPhomeParameter.model_validate(f) for f in parameter.fields or [])}
+        assert set(value) == set(subs), f"{parameter.name}: keys {sorted(value)} are not its sub-parameter ids"
+        for key, item in value.items():
+            _assert_value_type(subs[key], item)
 
 
 def leaked_tasks() -> list[asyncio.Task[Any]]:

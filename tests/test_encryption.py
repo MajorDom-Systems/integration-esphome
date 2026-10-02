@@ -75,7 +75,7 @@ async def test_pairing_with_the_key_works_like_a_plain_device(
     async with controller.dependencies.make_device_repository() as repo:
         stored = await repo.get(encrypted_discovery.id, as_=ESPhomeDevice)
     assert stored is not None
-    assert len(stored.parameters) == 29
+    assert len(stored.parameters) == 33
     assert stored.integration_data.encryption_key == KEY
     await wait_for_value(output, param(stored, "Temperature"), lambda v: v == 21.5)
 

@@ -60,6 +60,9 @@ def test_the_catalogue_tables_agree():
 
 def sample_value(parameter: ESPhomeParameter) -> Any:
     """A value the parameter accepts, picked from what the parameter itself declares."""
+    if parameter.fields:  # a struct, or a command with arguments: a value per sub-parameter, keyed by its id
+        subs = [ESPhomeParameter.model_validate(sub) for sub in parameter.fields]
+        return {str(sub.id): sample_value(sub) for sub in subs}
     low, high = parameter.min_value, parameter.max_value
     match parameter.data_type:
         case ParameterDataType.bool:
@@ -106,7 +109,12 @@ async def test_every_entity_kind_works_end_to_end(
 
         # ... and every field of the entity's state and command is either exposed or explained
         state, arguments = generic.api_fields(kind)
-        unmapped = (state | arguments) - set(actual)
+        sub_fields = {
+            ESPhomeParameter.model_validate(sub).integration_data.sub_field
+            for p in device.parameters
+            for sub in p.fields or []
+        }
+        unmapped = (state | arguments) - set(actual) - sub_fields  # a date's year is mapped as a field of `date`
         explained = set(catalogue.UNMAPPED.get(recipe, {}))
         assert unmapped == explained, (
             f"{kind}: fields neither mapped nor explained in UNMAPPED: {sorted(unmapped - explained)}; "

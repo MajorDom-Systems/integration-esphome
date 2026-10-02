@@ -9,7 +9,17 @@ from typing import Any
 from uuid import uuid4
 
 import pytest
-from aioesphomeapi import ClimateInfo, ClimateMode, ClimateState, EntityInfo
+from aioesphomeapi import (
+    ClimateInfo,
+    ClimateMode,
+    ClimateState,
+    EntityInfo,
+    LightInfo,
+    LockCommand,
+    LockInfo,
+    WaterHeaterInfo,
+    WaterHeaterState,
+)
 from majordom_integration_sdk.schemas.parameter import ParameterDataType, ParameterRole, ParameterVisibility
 
 from majordom_esphome import mapper
@@ -50,10 +60,13 @@ def parameter_of(entity: EntityInfo, spec: ParameterSpec) -> ESPhomeParameter:
         role=spec.role,
         visibility=spec.visibility or ParameterVisibility.user,
         valid_values=spec.valid_values,
+        min_value=spec.min_value,
+        max_value=spec.max_value,
+        fields=[parameter_of(entity, child) for child in spec.fields] or None,
         integration_data=ESPhomeParameterIntegrationData(
             entity_name=entity.name,
             object_id=entity.object_id,
-            component_type="climate",
+            component_type=mapper.component_type_of(entity) or "",
             parameter_type=ESPhomeParameterType.STATE,
             service_key=entity.key,
             sub_field=spec.sub_field,
@@ -90,3 +103,46 @@ def test_a_custom_fan_mode_command_sends_the_option_name():
     assert mapper.build_command_args(parameter, 1, {}) == {"key": 77, "custom_fan_mode": "Gust"}
     with pytest.raises(ValueError):
         mapper.build_command_args(parameter, 5, {})
+
+
+def test_a_lock_that_requires_a_code_offers_a_command_with_the_code_as_argument():
+    lock: Any = LockInfo
+    entity = lock(object_id="door", key=5, name="Door", requires_code=True)
+    spec = spec_of(entity, "command_with_code")
+    assert spec is not None
+    assert spec.data_type == ParameterDataType.none
+    assert [child.sub_field for child in spec.fields] == ["command", "code"]
+    parameter = parameter_of(entity, spec)
+    command, code = parameter.fields or []
+
+    args = mapper.build_command_args(parameter, {str(command.id): 1, str(code.id): "1234"}, {})
+
+    assert args == {"key": 5, "command": LockCommand.LOCK, "code": "1234"}
+    with pytest.raises(ValueError):  # the code is part of the command: it is never sent without it
+        mapper.build_command_args(parameter, {str(command.id): 1}, {})
+    assert spec_of(lock(object_id="door", key=5, name="Door", requires_code=False), "command_with_code") is None
+
+
+def test_water_heater_flags_are_switches_of_the_state_bit_mask():
+    heater: Any = WaterHeaterInfo
+    state: Any = WaterHeaterState
+    entity = heater(object_id="boiler", key=9, name="Boiler", supported_features=8 | 16)  # away, on/off
+    on, away = spec_of(entity, "on"), spec_of(entity, "away")
+    assert on is not None and away is not None
+    assert (on.data_type, on.role) == (ParameterDataType.bool, ParameterRole.control)
+
+    assert {k: v for k, v in mapper.state_values(entity, state(key=9, state=2)).items() if k in ("on", "away")} == {
+        "on": True,
+        "away": False,
+    }
+    assert mapper.build_command_args(parameter_of(entity, on), False, {}) == {"key": 9, "on": False}
+    assert spec_of(heater(object_id="boiler", key=9, name="Boiler", supported_features=0), "away") is None
+
+
+def test_the_colour_brightness_is_only_offered_where_colour_and_white_mix():
+    light: Any = LightInfo
+    rgb_only = light(object_id="l", key=1, name="L", supported_color_modes=[35])  # RGB
+    rgbw = light(object_id="l", key=1, name="L", supported_color_modes=[39])  # RGB + WHITE
+
+    assert spec_of(rgb_only, "color_brightness") is None
+    assert spec_of(rgbw, "color_brightness") is not None

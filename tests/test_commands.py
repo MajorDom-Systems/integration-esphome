@@ -4,6 +4,7 @@ from typing import Any
 
 import pytest
 from majordom_integration_sdk.schemas.command import DeviceCommand
+from majordom_integration_sdk.schemas.parameter import ParameterVisibility
 from majordom_integration_sdk.testing import RecordingControllerOutput
 
 from majordom_esphome.controller import ESPhomeController
@@ -125,3 +126,30 @@ async def test_command_to_an_offline_device_fails_visibly(
         stored = await repo.get(paired.id, as_=ESPhomeDevice)
     assert stored is not None
     assert stored.last_error
+
+
+async def test_the_transition_is_a_setting_kept_and_added_to_later_light_commands(
+    controller: ESPhomeController, paired: ESPhomeDevice, device: VirtualDevice, output
+):
+    transition = param(paired, "Virtual Light", "transition_length")
+    assert transition.visibility == ParameterVisibility.setting
+
+    await command(controller, paired, "Virtual Light", "transition_length", 1.5)
+    await wait_for_value(output, transition, lambda v: v == 1.5)  # echoed, so the Hub stores it
+    await command(controller, paired, "Virtual Light", "state", True)
+
+    await device.wait_log("Transition length: 1.5s")
+    output.events.clear()
+    await controller.fetch(paired)
+    await wait_for_value(output, transition, lambda v: v == 1.5)  # kept across fetches
+
+
+async def test_the_flash_command_takes_its_length_as_an_argument(
+    controller: ESPhomeController, paired: ESPhomeDevice, device: VirtualDevice
+):
+    flash = param(paired, "Virtual Light", "flash")
+    (length,) = [type(flash).model_validate(f) for f in flash.fields or []]
+
+    await command(controller, paired, "Virtual Light", "flash", {str(length.id): 1.0})
+
+    await device.wait_log("Flash length: 1.0s")

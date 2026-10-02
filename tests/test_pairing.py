@@ -33,6 +33,10 @@ EXPECTED_PARAMETERS: dict[tuple[str, str], tuple[T, R]] = {
     ("RGB Light", "brightness"): (T.decimal, R.control),
     ("RGB Light", "color_hue"): (T.decimal, R.control),  # colour as hue and saturation, like Matter and Zigbee
     ("RGB Light", "color_saturation"): (T.decimal, R.control),
+    ("Virtual Light", "transition_length"): (T.decimal, R.control),  # a setting kept by the integration
+    ("Virtual Light", "flash"): (T.none, R.control),  # a command with its length as argument
+    ("RGB Light", "transition_length"): (T.decimal, R.control),
+    ("RGB Light", "flash"): (T.none, R.control),
     ("Blinds", "position"): (T.decimal, R.control),
     ("Blinds", "operation"): (T.enum, R.sensor),
     ("Blinds", "stop"): (T.none, R.control),
