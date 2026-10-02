@@ -142,6 +142,9 @@ cover:
       - logger.log: "stop"
     position_action:
       - logger.log: "position"
+    tilt_action:
+      - logger.log: "tilt"
+    tilt_lambda: "return 0.5;"
 """,
     "fan": """\
 fan:
@@ -150,6 +153,7 @@ fan:
     speed_count: 3
     has_direction: true
     has_oscillating: true
+    preset_modes: ["eco", "turbo"]
 """,
     "light": """\
 output:
@@ -168,13 +172,30 @@ output:
     type: float
     write_action:
       - logger.log: "b"
+  - platform: template
+    id: out_cw
+    type: float
+    write_action:
+      - logger.log: "cw"
+  - platform: template
+    id: out_ww
+    type: float
+    write_action:
+      - logger.log: "ww"
 
 light:
-  - platform: rgb
+  - platform: rgbww
     name: "Probe"
     red: out_r
     green: out_g
     blue: out_b
+    cold_white: out_cw
+    warm_white: out_ww
+    cold_white_color_temperature: 153 mireds
+    warm_white_color_temperature: 500 mireds
+    effects:
+      - random:
+      - strobe:
 """,
     "climate": """\
 sensor:
@@ -182,27 +203,55 @@ sensor:
     id: room
     lambda: "return 21.5;"
     update_interval: 1s
+  - platform: template
+    id: room_humidity
+    lambda: "return 40.0;"
+    update_interval: 1s
 
 climate:
   - platform: thermostat
     name: "Probe"
     sensor: room
-    default_preset: Default
+    humidity_sensor: room_humidity
+    default_preset: Home
     preset:
-      - name: Default
+      - name: Home
         default_target_temperature_low: 20
         default_target_temperature_high: 24
+      - name: Away
+        default_target_temperature_low: 16
+        default_target_temperature_high: 28
+      - name: Night
+        default_target_temperature_low: 17
+        default_target_temperature_high: 19
     heat_action:
       - logger.log: "heat"
     cool_action:
       - logger.log: "cool"
     idle_action:
       - logger.log: "idle"
+    fan_only_action:
+      - logger.log: "fan only"
+    humidity_control_humidify_action:
+      - logger.log: "humidify"
+    humidity_control_off_action:
+      - logger.log: "humidity off"
+    fan_mode_auto_action:
+      - logger.log: "fan auto"
+    fan_mode_on_action:
+      - logger.log: "fan on"
+    swing_both_action:
+      - logger.log: "swing both"
+    swing_off_action:
+      - logger.log: "swing off"
     min_idle_time: 1s
     min_heating_off_time: 1s
     min_heating_run_time: 1s
     min_cooling_off_time: 1s
     min_cooling_run_time: 1s
+    min_fanning_off_time: 1s
+    min_fanning_run_time: 1s
+    min_fan_mode_switching_time: 1s
 """,
     "date": """\
 datetime:
@@ -276,19 +325,39 @@ EXPECTED: dict[str, dict[str, tuple[T, R]]] = {
         "current_operation": (T.enum, R.sensor),
         "stop": (T.none, R.control),
     },
-    "cover": {"position": (T.decimal, R.control), "operation": (T.enum, R.sensor)},
-    "fan": {"state": (T.bool, R.control)},
+    "cover": {
+        "position": (T.decimal, R.control),
+        "operation": (T.enum, R.sensor),
+        "tilt": (T.decimal, R.control),
+        "stop": (T.none, R.control),
+    },
+    "fan": {
+        "state": (T.bool, R.control),
+        "speed_level": (T.integer, R.control),
+        "oscillating": (T.bool, R.control),
+        "direction": (T.enum, R.control),
+        "preset_mode": (T.enum, R.control),
+    },
     "light": {
         "state": (T.bool, R.control),
         "brightness": (T.decimal, R.control),
         "color_hue": (T.decimal, R.control),
         "color_saturation": (T.decimal, R.control),
+        "color_temperature": (T.decimal, R.control),
+        "effect": (T.enum, R.control),
     },
     "climate": {
         "mode": (T.enum, R.control),
+        "action": (T.enum, R.sensor),
         "current_temperature": (T.decimal, R.sensor),
         "target_temperature_low": (T.decimal, R.control),
         "target_temperature_high": (T.decimal, R.control),
+        "fan_mode": (T.enum, R.control),
+        "swing_mode": (T.enum, R.control),
+        "preset": (T.enum, R.control),
+        "custom_preset": (T.enum, R.control),
+        "current_humidity": (T.decimal, R.sensor),
+        "target_humidity": (T.decimal, R.control),
     },
     "date": {"year": (T.integer, R.sensor), "month": (T.integer, R.sensor), "day": (T.integer, R.sensor)},
     "time": {"hour": (T.integer, R.sensor), "minute": (T.integer, R.sensor), "second": (T.integer, R.sensor)},
@@ -309,52 +378,32 @@ EXPECTED: dict[str, dict[str, tuple[T, R]]] = {
 
 # Fields of the entity's state or command that no parameter exposes, each with the reason. A field the library adds
 # later is not listed: the sweep fails until it is mapped or explained here.
-NOT_YET = "not mapped yet"
 UNMAPPED: dict[str, dict[str, str]] = {
     "cover": {
         "current_operation": "exposed as operation",
         "legacy_state": "deprecated: position and operation replace it",
-        "stop": f"{NOT_YET}",
-        "tilt": f"{NOT_YET}",
     },
-    "fan": {
-        field: f"{NOT_YET} (only on/off is exposed)"
-        for field in ("direction", "oscillating", "preset_mode", "speed", "speed_level")
-    },
+    "fan": {"speed": "the legacy three-step speed: speed_level replaces it"},
     "light": {
         "red": "exposed as color_hue and color_saturation",
         "green": "exposed as color_hue and color_saturation",
         "blue": "exposed as color_hue and color_saturation",
         "rgb": "exposed as color_hue and color_saturation",
         "color_mode": "derived from the capabilities the light reports",
-        "color_brightness": NOT_YET,
-        "color_temperature": NOT_YET,
-        "cold_white": NOT_YET,
-        "warm_white": NOT_YET,
-        "white": NOT_YET,
-        "effect": NOT_YET,
-        "flash_length": "a one-off command option",
-        "transition_length": "a one-off command option",
+        "color_brightness": "the brightness of the colour part: brightness covers the common case",
+        "cold_white": "the channel behind color_temperature",
+        "warm_white": "the channel behind color_temperature",
+        "white": "only on RGBW lights: this recipe's light is RGBWW",
+        "flash_length": "a one-off option of a command, not a value",
+        "transition_length": "a one-off option of a command, not a value",
     },
     "climate": {
         "target_temperature": "this thermostat is two-point: low and high are exposed instead",
         "unused_legacy_away": "deprecated",
-        **{
-            field: NOT_YET
-            for field in (
-                "action",
-                "current_humidity",
-                "custom_fan_mode",
-                "custom_preset",
-                "fan_mode",
-                "preset",
-                "swing_mode",
-                "target_humidity",
-            )
-        },
+        "custom_fan_mode": "the host thermostat platform has no custom fan modes",
     },
-    "lock": {"code": "cannot be sent without the command: not mapped yet"},
-    "alarm_control_panel": {"code": "cannot be sent without the command: not mapped yet"},
+    "lock": {"code": "an argument of the command (the code to type), not a value of the entity"},
+    "alarm_control_panel": {"code": "an argument of the command (the code to type), not a value of the entity"},
 }
 
 

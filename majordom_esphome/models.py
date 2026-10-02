@@ -2,7 +2,12 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from majordom_integration_sdk.schemas.device import Device, Parameter
-from majordom_integration_sdk.schemas.parameter import ParameterDataType, ParameterRole, ParameterUnit
+from majordom_integration_sdk.schemas.parameter import (
+    ParameterDataType,
+    ParameterRole,
+    ParameterUnit,
+    ParameterVisibility,
+)
 from pydantic import BaseModel, Field
 
 
@@ -67,3 +72,4 @@ class ParameterSpec:
     max_value: float | None = None
     min_step: float | None = None
     valid_values: dict[int, str] | None = None
+    visibility: ParameterVisibility | None = None  # None: from the entity

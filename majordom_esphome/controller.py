@@ -19,6 +19,7 @@ from majordom_integration_sdk.schemas import (
 )
 from majordom_integration_sdk.schemas.command import DeviceCommand
 from majordom_integration_sdk.schemas.device import Discovery
+from majordom_integration_sdk.schemas.parameter import ParameterVisibility
 
 from . import mapper
 from .connection import ESPhomeDeviceConnection, describe_error
@@ -257,6 +258,12 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
             if sub_field in exposed
         ]
 
+    @staticmethod
+    def _visibility(entity: EntityInfo, spec: ParameterSpec) -> ParameterVisibility:
+        """The entity's own visibility, unless the spec asks for a less prominent one (and the entity allows it)."""
+        visibility = mapper.visibility_of(entity)
+        return spec.visibility if visibility == ParameterVisibility.user and spec.visibility else visibility
+
     def _parameter_id(self, device_id: UUID, entity: EntityInfo, sub_field: str) -> UUID:
         return self.parameter_uuid(device_id, f"{entity.object_id}_{sub_field}")
 
@@ -364,7 +371,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
             max_value=spec.max_value,
             min_step=spec.min_step,
             valid_values=spec.valid_values,
-            visibility=mapper.visibility_of(entity),
+            visibility=self._visibility(entity, spec),
             integration_data=ESPhomeParameterIntegrationData(
                 entity_name=entity.name,
                 object_id=entity.object_id,

@@ -11,6 +11,7 @@ import dataclasses
 import inspect
 import math
 import typing
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from enum import IntEnum
 from functools import cache
@@ -18,7 +19,7 @@ from types import UnionType
 from typing import Any
 
 import aioesphomeapi
-from aioesphomeapi import COMPONENT_TYPE_TO_INFO, APIClient, EntityState
+from aioesphomeapi import COMPONENT_TYPE_TO_INFO, APIClient, EntityState, LightColorCapability
 from majordom_integration_sdk.schemas.parameter import ParameterDataType, ParameterRole, ParameterUnit
 
 from .models import ESPhomeParameter, ParameterSpec
@@ -27,7 +28,64 @@ from .models import ESPhomeParameter, ParameterSpec
 SKIPPED = {"camera", "event", "infrared", "radio_frequency"}
 STATE_NOISE = {"key", "device_id", "missing_state"}
 # ESPHome reports these as fractions (0-1); MajorDom expresses them as percentages
-FRACTIONS = {"position", "tilt", "volume", "brightness"}
+FRACTIONS = {"position", "tilt", "volume", "brightness", "white"}
+# Already percentages (0-100) in ESPHome
+PERCENT_VALUES = {"current_humidity", "target_humidity"}
+UNITS = {"color_temperature": ParameterUnit.mired, "current_humidity": ParameterUnit.percentage}
+UNITS["target_humidity"] = ParameterUnit.percentage
+
+
+def _caps(entity: Any) -> int:
+    """ColorMode values are bit masks of LightColorCapability, e.g. 35 = ON_OFF | BRIGHTNESS | RGB."""
+    mask = 0
+    for mode in entity.supported_color_modes:
+        mask |= int(mode)
+    return mask
+
+
+# What an entity can do is declared on its info, not on its state: a parameter is only made when the entity says it
+# supports the field. Keyed by (component, field); fields without an entry are always made.
+GATES: dict[tuple[str, str], Callable[[Any], bool]] = {
+    ("fan", "speed_level"): lambda e: e.supports_speed,
+    ("fan", "oscillating"): lambda e: e.supports_oscillation,
+    ("fan", "direction"): lambda e: e.supports_direction,
+    ("fan", "preset_mode"): lambda e: bool(e.supported_preset_modes),
+    ("cover", "tilt"): lambda e: e.supports_tilt,
+    ("cover", "stop"): lambda e: e.supports_stop,
+    # cold/warm white lights are driven through the colour temperature, their two channels are an implementation detail
+    ("light", "color_temperature"): lambda e: bool(
+        _caps(e) & (LightColorCapability.COLOR_TEMPERATURE | LightColorCapability.COLD_WARM_WHITE)
+    ),
+    ("light", "white"): lambda e: bool(_caps(e) & LightColorCapability.WHITE),
+    ("light", "effect"): lambda e: bool(e.effects),
+    ("climate", "action"): lambda e: e.supports_action,
+    ("climate", "fan_mode"): lambda e: bool(e.supported_fan_modes),
+    ("climate", "swing_mode"): lambda e: bool(e.supported_swing_modes),
+    ("climate", "preset"): lambda e: bool(e.supported_presets),
+    ("climate", "custom_fan_mode"): lambda e: bool(e.supported_custom_fan_modes),
+    ("climate", "custom_preset"): lambda e: bool(e.supported_custom_presets),
+    ("climate", "current_humidity"): lambda e: e.supports_current_humidity,
+    ("climate", "target_humidity"): lambda e: e.supports_target_humidity,
+}
+# String fields that are a choice from a list on the info: made as enums (index <-> option), like a select
+OPTIONS: dict[tuple[str, str], Callable[[Any], list[str]]] = {
+    ("fan", "preset_mode"): lambda e: list(e.supported_preset_modes),
+    ("light", "effect"): lambda e: list(e.effects),
+    ("climate", "custom_fan_mode"): lambda e: list(e.supported_custom_fan_modes),
+    ("climate", "custom_preset"): lambda e: list(e.supported_custom_presets),
+}
+# Enum fields of which the entity supports only some members
+SUBSETS: dict[tuple[str, str], Callable[[Any], Iterable[IntEnum]]] = {
+    ("climate", "fan_mode"): lambda e: e.supported_fan_modes,
+    ("climate", "swing_mode"): lambda e: e.supported_swing_modes,
+    ("climate", "preset"): lambda e: e.supported_presets,
+}
+# Limits the entity reports
+LIMITS: dict[tuple[str, str], Callable[[Any], tuple[float, float]]] = {
+    ("fan", "speed_level"): lambda e: (0, e.supported_speed_count),
+    ("light", "color_temperature"): lambda e: (e.min_mireds, e.max_mireds),
+    ("climate", "target_humidity"): lambda e: (e.visual_min_humidity, e.visual_max_humidity),
+}
 
 
 @dataclass(frozen=True)
@@ -132,37 +190,60 @@ def is_mapped(component: str) -> bool:
     return component not in SKIPPED and bool(fields_of(component))
 
 
-def specs(component: str) -> list[ParameterSpec]:
+def specs(component: str, entity: Any = None, skip: frozenset[str] = frozenset()) -> list[ParameterSpec]:
+    """Parameters of the entity's fields, except `skip` (what a hand-written mapping already covers).
+
+    With the entity, what it does not support is left out, enums are limited to what it supports, option lists
+    become enums and the limits it reports are used.
+    """
     result = []
     for field in fields_of(component):
+        key = (component, field.name)
+        if field.name in skip or (entity is not None and key in GATES and not GATES[key](entity)):
+            continue
         role = ParameterRole.control if field.in_command else ParameterRole.sensor
+        unit = UNITS.get(field.name, ParameterUnit.plain)
+        low, high = LIMITS[key](entity) if entity is not None and key in LIMITS else (None, None)
         if field.is_flag:
             result.append(ParameterSpec(field.name, ParameterDataType.none, role))
+        elif entity is not None and key in OPTIONS:
+            labels = dict(enumerate(OPTIONS[key](entity)))
+            result.append(ParameterSpec(field.name, ParameterDataType.enum, role, valid_values=labels))
         elif issubclass(field.kind, IntEnum):
-            labels = {int(member): member.name for member in field.kind}
+            members = SUBSETS[key](entity) if entity is not None and key in SUBSETS else field.kind
+            labels = {int(member): member.name for member in members}
             result.append(ParameterSpec(field.name, ParameterDataType.enum, role, valid_values=labels))
         elif field.kind is bool:
             result.append(ParameterSpec(field.name, ParameterDataType.bool, role))
         elif field.kind is int:
-            result.append(ParameterSpec(field.name, ParameterDataType.integer, role))
+            result.append(ParameterSpec(field.name, ParameterDataType.integer, role, unit, low, high))
         elif field.kind is float and field.fraction:
             result.append(ParameterSpec(field.name, ParameterDataType.decimal, role, ParameterUnit.percentage, 0, 100))
         elif field.kind is float:
-            result.append(ParameterSpec(field.name, ParameterDataType.decimal, role))
+            unit = UNITS.get(field.name, ParameterUnit.plain)
+            result.append(ParameterSpec(field.name, ParameterDataType.decimal, role, unit, low, high))
         else:
             result.append(ParameterSpec(field.name, ParameterDataType.string, role))
     return result
 
 
-def state_values(component: str, state: EntityState) -> dict[str, Any]:
+def state_values(
+    component: str, state: EntityState, skip: frozenset[str] = frozenset(), entity: Any = None
+) -> dict[str, Any]:
     if getattr(state, "missing_state", False):
         return {}
     values: dict[str, Any] = {}
     for field in fields_of(component):
-        value = getattr(state, field.name, None) if field.in_state else None
+        value = getattr(state, field.name, None) if field.in_state and field.name not in skip else None
         if value is None:
             continue
-        if field.kind is float:
+        key = (component, field.name)
+        if key in OPTIONS and entity is not None:
+            options = OPTIONS[key](entity)
+            if value not in options:  # an empty choice: nothing selected
+                continue
+            value = options.index(value)
+        elif field.kind is float:
             if math.isnan(value):
                 continue
             value = round(value * 100, 2) if field.fraction else float(value)
@@ -172,6 +253,8 @@ def state_values(component: str, state: EntityState) -> dict[str, Any]:
             value = str(value)
         else:  # int and the library's integer enums: plain int
             value = int(value)
+            if key in SUBSETS and entity is not None and value not in {int(m) for m in SUBSETS[key](entity)}:
+                continue  # e.g. "no preset": not one of the choices the entity offers
         values[field.name] = value
     return values
 
@@ -201,6 +284,10 @@ def command_args(component: str, parameter: ESPhomeParameter, value: Any) -> dic
         raise ValueError(f"{parameter.name} cannot be set")
     if field.is_flag:
         return {name: True}
+    if (component, name) in OPTIONS:
+        if value not in (parameter.valid_values or {}):
+            raise ValueError(f"{parameter.name}: no option {value!r}")
+        return {name: (parameter.valid_values or {})[value]}
     if issubclass(field.kind, IntEnum):
         if value not in (parameter.valid_values or {}):
             raise ValueError(f"{parameter.name}: no option {value!r}")

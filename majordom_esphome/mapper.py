@@ -3,6 +3,7 @@
 import colorsys
 import math
 from collections.abc import Mapping
+from dataclasses import replace
 from enum import IntEnum
 from typing import Any
 
@@ -67,6 +68,29 @@ COVER_OPERATIONS = {
 
 _HAND_WRITTEN = {component.value for component in ESPhomeComponentType}
 
+# Fields of the state and command that the hand-written mapping covers (under the same or another name) or that are
+# no values; the generic mapping adds every other field the entity supports, as `setting` parameters.
+HANDLED: dict[str, frozenset[str]] = {
+    "binary_sensor": frozenset({"state"}),
+    "sensor": frozenset({"state"}),
+    "text_sensor": frozenset({"state"}),
+    "switch": frozenset({"state"}),
+    "number": frozenset({"state"}),
+    "select": frozenset({"state"}),
+    "button": frozenset(),
+    "fan": frozenset({"state", "speed"}),  # `speed` is the legacy three-step enum, speed_level replaces it
+    "cover": frozenset({"position", "current_operation", "legacy_state"}),
+    "light": frozenset(
+        {"state", "brightness", "red", "green", "blue", "rgb", "color_mode", "color_brightness"}
+        | {"cold_white", "warm_white"}  # the channels behind color_temperature
+        | {"flash_length", "transition_length"}  # one-off options of a command
+    ),
+    "climate": frozenset(
+        {"mode", "current_temperature", "target_temperature", "target_temperature_low", "target_temperature_high"}
+        | {"unused_legacy_away"}
+    ),
+}
+
 
 def component_type_of(entity: EntityInfo) -> str | None:
     """The library's name of an entity's kind, or None if it has nothing to map (a camera, an event, ...)."""
@@ -86,7 +110,14 @@ def visibility_of(entity: EntityInfo) -> ParameterVisibility:
 
 def parameter_specs(entity: EntityInfo, component: str) -> list[ParameterSpec]:
     if component not in _HAND_WRITTEN:
-        return generic.specs(component)
+        return generic.specs(component, entity)
+    extra = generic.specs(component, entity, skip=HANDLED[component])
+    return _hand_written_specs(entity, ESPhomeComponentType(component)) + [
+        replace(spec, visibility=ParameterVisibility.setting) for spec in extra
+    ]
+
+
+def _hand_written_specs(entity: EntityInfo, component: ESPhomeComponentType) -> list[ParameterSpec]:
     control, sensor = ParameterRole.control, ParameterRole.sensor
     decimal, boolean = ParameterDataType.decimal, ParameterDataType.bool
     unit = get_unit(getattr(entity, "device_class", None), getattr(entity, "unit_of_measurement", None))
@@ -202,8 +233,12 @@ def state_values(entity: EntityInfo, state: EntityState) -> dict[str, Any]:
         case SwitchState() | BinarySensorState() | FanState():
             values = {"state": bool(state.state)}
         case _:
-            component = _COMPONENT_BY_INFO.get(type(entity))
-            values = generic.state_values(component, state) if component else {}
+            values = {}
+    component = _COMPONENT_BY_INFO.get(type(entity))
+    if component in _HAND_WRITTEN:
+        values.update(generic.state_values(component, state, HANDLED[component], entity))
+    elif component:
+        values = generic.state_values(component, state, entity=entity)
     return {sub_field: value for sub_field, value in values.items() if value is not None}
 
 
@@ -217,7 +252,7 @@ def build_command_args(parameter: ESPhomeParameter, value: Any, states: Mapping[
     args: dict[str, Any] = {"key": data.service_key}
 
     match data.component_type, sub_field:
-        case ESPhomeComponentType.SWITCH | ESPhomeComponentType.FAN, _:
+        case ESPhomeComponentType.SWITCH | ESPhomeComponentType.FAN, "state":
             args["state"] = _as_bool(value)
         case ESPhomeComponentType.LIGHT, "state":
             args["state"] = _as_bool(value)
@@ -235,14 +270,14 @@ def build_command_args(parameter: ESPhomeParameter, value: Any, states: Mapping[
             args["rgb"] = colorsys.hsv_to_rgb(hue / 360, saturation / 100, 1.0)
         case ESPhomeComponentType.COVER, "position":
             args["position"] = _as_number(value, parameter) / 100
-        case ESPhomeComponentType.NUMBER, _:
+        case ESPhomeComponentType.NUMBER, "state":
             args["state"] = _as_number(value, parameter)
-        case ESPhomeComponentType.SELECT, _:
+        case ESPhomeComponentType.SELECT, "state":
             options = parameter.valid_values or {}
             if value not in options:
                 raise ValueError(f"{parameter.name}: no option {value!r}")
             args["state"] = options[value]
-        case ESPhomeComponentType.BUTTON, _:
+        case ESPhomeComponentType.BUTTON, "state":
             pass
         case ESPhomeComponentType.CLIMATE, "mode":
             if value not in (parameter.valid_values or {}):
@@ -250,8 +285,6 @@ def build_command_args(parameter: ESPhomeParameter, value: Any, states: Mapping[
             args["mode"] = ClimateMode(value)
         case ESPhomeComponentType.CLIMATE, str() as target if target.startswith("target_temperature"):
             args[target] = _as_number(value, parameter)
-        case _:
-            if data.component_type in _HAND_WRITTEN:
-                raise ValueError(f"{parameter.name} cannot be set")
+        case _:  # a field the hand-written mapping does not cover: the generic one does
             args.update(generic.command_args(data.component_type, parameter, value))
     return args

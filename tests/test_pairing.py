@@ -13,6 +13,7 @@ from majordom_integration_sdk.schemas.parameter import (
 )
 from majordom_integration_sdk.schemas.parameter import (
     ParameterUnit,
+    ParameterVisibility,
 )
 from majordom_integration_sdk.testing import RecordingControllerOutput
 
@@ -34,6 +35,12 @@ EXPECTED_PARAMETERS: dict[tuple[str, str], tuple[T, R]] = {
     ("RGB Light", "color_saturation"): (T.decimal, R.control),
     ("Blinds", "position"): (T.decimal, R.control),
     ("Blinds", "operation"): (T.enum, R.sensor),
+    ("Blinds", "stop"): (T.none, R.control),
+    ("Virtual Fan", "speed_level"): (T.integer, R.control),
+    ("Virtual Fan", "oscillating"): (T.bool, R.control),
+    ("Virtual Fan", "direction"): (T.enum, R.control),
+    ("HVAC", "action"): (T.enum, R.sensor),
+    ("HVAC", "custom_preset"): (T.enum, R.control),
     ("HVAC", "mode"): (T.enum, R.control),
     ("HVAC", "current_temperature"): (T.decimal, R.sensor),
     ("HVAC", "target_temperature_low"): (T.decimal, R.control),  # the thermostat is two-point
@@ -79,6 +86,18 @@ async def test_parameter_metadata_comes_from_the_device(paired: ESPhomeDevice):
         assert (level.unit, level.min_value, level.max_value) == (ParameterUnit.percentage, 0, 100), entity
     hue = param(paired, "RGB Light", "color_hue")
     assert (hue.unit, hue.min_value, hue.max_value) == (ParameterUnit.arcdegree, 0, 360)
+
+
+async def test_the_remaining_fields_are_settings_with_the_limits_the_entity_reports(paired: ESPhomeDevice):
+    speed = param(paired, "Virtual Fan", "speed_level")
+    assert (speed.min_value, speed.max_value) == (0, 3)  # speed_count: 3
+    assert param(paired, "Virtual Fan", "direction").valid_values == {0: "FORWARD", 1: "REVERSE"}
+    assert param(paired, "HVAC", "custom_preset").valid_values == {0: "Default"}  # the presets the thermostat has
+    extras = [("Blinds", "stop"), ("Virtual Fan", "oscillating"), ("HVAC", "action"), ("Virtual Fan", "direction")]
+    for entity, sub_field in extras:
+        assert param(paired, entity, sub_field).visibility == ParameterVisibility.setting, (entity, sub_field)
+    assert param(paired, "Relay").visibility == ParameterVisibility.user  # the hand-written parameters stay on top
+    assert not [p for p in paired.parameters if p.integration_data.sub_field == "tilt"]  # the blinds cannot tilt
 
 
 async def test_identity_is_derived_through_the_sdk_helpers(controller: ESPhomeController, paired: ESPhomeDevice):

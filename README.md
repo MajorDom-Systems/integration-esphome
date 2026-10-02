@@ -172,6 +172,17 @@ integers with string labels in `valid_values`, labelled by the ESPHome enum name
 entity's own unit string, else from its device class. Entities in the
 `config` / `diagnostic` category are `setting`, and entities disabled by default are `system`.
 
+### Remaining fields
+
+The hand-written mapping above gives the everyday parameters. Every other state or command field an entity supports is
+added by the generic mapping as a `setting` parameter (`majordom_esphome/generic.py`), so nothing the library reports is
+dropped silently: a fan's speed level, direction, oscillation and presets; a cover's tilt and stop; a light's colour
+temperature, white and effects; a climate's action, fan, swing and preset modes and humidity. A field is only added when
+the entity says it supports it, enums are limited to the supported members, option lists (effects, presets) become
+enums like a select, and the limits the entity reports (speed count, mireds, humidity) are used. The few fields that
+are no values (a command's `code` argument, a light's `flash_length`) are listed with the reason in `UNMAPPED` in the
+catalogue, which fails when a new field appears that is neither mapped nor explained.
+
 ### Generic mapping
 
 Entities without a hand-written mapping get parameters from `aioesphomeapi`'s own types (`majordom_esphome/generic.py`):
