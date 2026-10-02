@@ -81,9 +81,9 @@ HANDLED: dict[str, frozenset[str]] = {
     "fan": frozenset({"state", "speed"}),  # `speed` is the legacy three-step enum, speed_level replaces it
     "cover": frozenset({"position", "current_operation", "legacy_state"}),
     "light": frozenset(
-        {"state", "brightness", "red", "green", "blue", "rgb", "color_mode", "color_brightness"}
+        {"state", "brightness", "red", "green", "blue", "rgb", "color_mode"}
         | {"cold_white", "warm_white"}  # the channels behind color_temperature
-        | {"flash_length", "transition_length"}  # one-off options of a command
+        | {"flash_length", "transition_length"}  # the flash command and the transition setting below
     ),
     "climate": frozenset(
         {"mode", "current_temperature", "target_temperature", "target_temperature_low", "target_temperature_high"}
@@ -153,6 +153,20 @@ def _hand_written_specs(entity: EntityInfo, component: ESPhomeComponentType) -> 
                     ParameterSpec("color_hue", decimal, control, ParameterUnit.arcdegree, 0, 360),
                     ParameterSpec("color_saturation", decimal, control, PERCENT, 0, 100),
                 ]
+            setting = ParameterVisibility.setting
+            seconds = ParameterUnit.second
+            specs += [
+                # how long every later change of this light fades: kept here, added to each light command
+                ParameterSpec("transition_length", decimal, control, seconds, 0, None, visibility=setting, local=True),
+                # flash the light for a while: a command with one argument
+                ParameterSpec(
+                    "flash",
+                    ParameterDataType.none,
+                    control,
+                    visibility=setting,
+                    fields=(ParameterSpec("length", decimal, control, seconds, 0, None),),
+                ),
+            ]
             return specs
         case ESPhomeComponentType.COVER, CoverInfo():
             return [
@@ -242,10 +256,37 @@ def state_values(entity: EntityInfo, state: EntityState) -> dict[str, Any]:
     return {sub_field: value for sub_field, value in values.items() if value is not None}
 
 
-def build_command_args(parameter: ESPhomeParameter, value: Any, states: Mapping[int, EntityState]) -> dict[str, Any]:
-    """Keyword arguments of the `aioesphomeapi` `<component>_command` method that applies `value`."""
+# Settings the integration keeps (nothing is sent to the device when they change), by (component, field)
+LOCAL_SETTINGS = {("light", "transition_length")}
+DEFAULT_FLASH_LENGTH = 2.0  # seconds, for a tap that sends no length
+
+
+def is_local(parameter: ESPhomeParameter) -> bool:
+    data = parameter.integration_data
+    return (data.component_type, data.sub_field) in LOCAL_SETTINGS
+
+
+def local_value(parameter: ESPhomeParameter, value: Any) -> Any:
+    """A setting's value as it is kept, validated like a command value."""
+    if parameter.data_type == ParameterDataType.decimal:
+        return _as_number(value, parameter)
+    return value
+
+
+def build_command_args(
+    parameter: ESPhomeParameter,
+    value: Any,
+    states: Mapping[int, EntityState],
+    settings: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Keyword arguments of the `aioesphomeapi` `<component>_command` method that applies `value`.
+
+    `settings` are the kept settings of the parameter's entity (field -> value), e.g. a light's transition.
+    """
     if parameter.role != ParameterRole.control:
         raise ValueError(f"{parameter.name} is read-only")
+    if is_local(parameter):
+        raise ValueError(f"{parameter.name} is a setting: nothing is sent to the device")
     data = parameter.integration_data
     sub_field = data.sub_field
     assert data.service_key is not None
@@ -258,6 +299,11 @@ def build_command_args(parameter: ESPhomeParameter, value: Any, states: Mapping[
             args["state"] = _as_bool(value)
         case ESPhomeComponentType.LIGHT, "brightness":
             args["brightness"] = _as_number(value, parameter) / 100
+        case ESPhomeComponentType.LIGHT, "flash":
+            (length,) = generic.sub_parameters(parameter)
+            given = value.get(str(length.id), value.get("length")) if isinstance(value, dict) else value
+            args["state"] = True
+            args["flash_length"] = DEFAULT_FLASH_LENGTH if given is None else _as_number(given, length)
         case ESPhomeComponentType.LIGHT, "color_hue" | "color_saturation":
             current = states.get(data.service_key)
             colour = _hue_saturation(current) if isinstance(current, LightState) else {}
@@ -287,4 +333,7 @@ def build_command_args(parameter: ESPhomeParameter, value: Any, states: Mapping[
             args[target] = _as_number(value, parameter)
         case _:  # a field the hand-written mapping does not cover: the generic one does
             args.update(generic.command_args(data.component_type, parameter, value))
+    transition = (settings or {}).get("transition_length")
+    if data.component_type == ESPhomeComponentType.LIGHT and sub_field != "flash" and transition:
+        args["transition_length"] = float(transition)
     return args

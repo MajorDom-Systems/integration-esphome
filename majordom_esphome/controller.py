@@ -249,14 +249,19 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
         component = mapper.component_type_of(entity)
         if component is None:
             return []
-        exposed = {spec.sub_field for spec in mapper.parameter_specs(entity, component)}
-        return [
-            DeviceParameterChange(
-                device_id=device_id, parameter_id=self._parameter_id(device_id, entity, sub_field), value=value
-            )
-            for sub_field, value in mapper.state_values(entity, state).items()
-            if sub_field in exposed
-        ]
+        exposed = {spec.sub_field: spec for spec in mapper.parameter_specs(entity, component)}
+        events = []
+        for sub_field, value in mapper.state_values(entity, state).items():
+            spec = exposed.get(sub_field)
+            if spec is None:
+                continue
+            if spec.fields:  # a struct value: keyed by the sub-parameter ids, as the SDK specifies
+                value = {
+                    str(self._parameter_id(device_id, entity, f"{sub_field}.{name}")): v for name, v in value.items()
+                }
+            parameter_id = self._parameter_id(device_id, entity, sub_field)
+            events.append(DeviceParameterChange(device_id=device_id, parameter_id=parameter_id, value=value))
+        return events
 
     @staticmethod
     def _visibility(entity: EntityInfo, spec: ParameterSpec) -> ParameterVisibility:
@@ -268,7 +273,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
         return self.parameter_uuid(device_id, f"{entity.object_id}_{sub_field}")
 
     async def _report_snapshot(self, device_id: UUID) -> None:
-        """Report the last known value of every parameter in a single batch."""
+        """Report the last known value of every parameter in a single batch, the kept settings included."""
         connection = self._connections[device_id]
         entities = connection.get_entities()
         events = [
@@ -277,6 +282,12 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
             if key in entities
             for event in self._events(device_id, entities[key], state)
         ]
+        device = await self._update_device(device_id)
+        settings = device.integration_data.settings if device is not None else {}
+        for entity in entities.values():
+            for field, value in settings.get(entity.object_id, {}).items():
+                parameter_id = self._parameter_id(device_id, entity, field)
+                events.append(DeviceParameterChange(device_id=device_id, parameter_id=parameter_id, value=value))
         if events:
             await self.dependencies.output.controller_did_receive_events(self, events)
 
@@ -358,11 +369,15 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
             raise
 
     def _build_parameter(
-        self, device_id: UUID, entity: EntityInfo, component: str, spec: ParameterSpec
+        self, device_id: UUID, entity: EntityInfo, component: str, spec: ParameterSpec, parent: str | None = None
     ) -> ESPhomeParameter:
-        name = entity.name if spec.sub_field == "state" else f"{entity.name} {spec.sub_field.replace('_', ' ')}"
+        path = (
+            f"{parent}.{spec.sub_field}" if parent else spec.sub_field
+        )  # a sub-parameter's id is scoped to its parent
+        label = spec.sub_field.replace("_", " ")
+        name = label.capitalize() if parent else entity.name if spec.sub_field == "state" else f"{entity.name} {label}"
         return ESPhomeParameter(
-            id=self._parameter_id(device_id, entity, spec.sub_field),
+            id=self._parameter_id(device_id, entity, path),
             name=name,
             data_type=spec.data_type,
             role=spec.role,
@@ -372,6 +387,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
             min_step=spec.min_step,
             valid_values=spec.valid_values,
             visibility=self._visibility(entity, spec),
+            fields=[self._build_parameter(device_id, entity, component, child, path) for child in spec.fields] or None,
             integration_data=ESPhomeParameterIntegrationData(
                 entity_name=entity.name,
                 object_id=entity.object_id,
@@ -381,6 +397,21 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
                 sub_field=spec.sub_field,
             ),
         )
+
+    async def _keep_setting(
+        self, device_id: UUID, object_id: str, field: str, parameter: ESPhomeParameter, value: Any
+    ) -> None:
+        kept = mapper.local_value(parameter, value)
+        async with self.dependencies.make_device_repository() as repo:
+            device = await repo.get(device_id, as_=ESPhomeDevice)
+            if device is None:
+                raise ValueError(f"Unknown device {device_id}")
+            settings = {**device.integration_data.settings}
+            settings[object_id] = {**settings.get(object_id, {}), field: kept}
+            data = device.integration_data.model_copy(update={"settings": settings})
+            await repo.save(device.model_copy(update={"integration_data": data}))
+        event = DeviceParameterChange(device_id=device_id, parameter_id=parameter.id, value=kept)
+        await self.dependencies.output.controller_did_receive_events(self, [event])
 
     async def unpair(self, device: ESPhomeDevice) -> None:
         connection = self._connections.pop(device.id, None)
@@ -406,13 +437,19 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
         device: ESPhomeDevice,
         parameter: ESPhomeParameter,
     ) -> None:
+        data = parameter.integration_data
+        if mapper.is_local(parameter):  # a setting kept here: stored, and echoed so the Hub stores it too
+            await self._keep_setting(device.id, data.object_id or "", data.sub_field or "", parameter, command.value)
+            return
+
         connection = self._connections.get(device.id)
         if connection is None or not connection.ready:
             await self._update_device(device.id, last_error=f"{parameter.name} could not be set: device not connected")
             raise ConnectionError("Device not connected")
 
-        args = mapper.build_command_args(parameter, command.value, self._states.get(device.id, {}))
-        data = parameter.integration_data
+        stored = await self._update_device(device.id)
+        settings = stored.integration_data.settings.get(data.object_id or "", {}) if stored is not None else {}
+        args = mapper.build_command_args(parameter, command.value, self._states.get(device.id, {}), settings)
         try:
             await connection.send_command(args["key"], data.component_type, args)
         except ConnectionError:

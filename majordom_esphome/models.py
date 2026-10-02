@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Any
 
 from majordom_integration_sdk.schemas.device import Device, Parameter
 from majordom_integration_sdk.schemas.parameter import (
@@ -40,6 +41,8 @@ class ESPhomeDeviceIntegrationData(BaseModel):
     port: int = 6053
     encryption_key: str | None = None
     mac_address: str | None = None
+    # settings the integration keeps itself (a light's transition): entity object_id -> field -> value
+    settings: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 
 class ESPhomeParameterIntegrationData(BaseModel):
@@ -73,3 +76,6 @@ class ParameterSpec:
     min_step: float | None = None
     valid_values: dict[int, str] | None = None
     visibility: ParameterVisibility | None = None  # None: from the entity
+    # sub-parameters: the fields of a `struct` value, or the arguments of a `none` command that needs several
+    fields: tuple["ParameterSpec", ...] = ()
+    local: bool = False  # a setting the integration keeps and applies to later commands; nothing is sent for it
