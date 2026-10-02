@@ -2,6 +2,7 @@ name: QA & Tests
 
 on:
   push:
+    # Long-lived branches — keep whichever your repo uses (main or master) and develop.
     branches:
       - main
       - master
@@ -10,32 +11,20 @@ on:
   workflow_dispatch:
 
 jobs:
+  # Real integrations created from this template (any repo other than the template itself)
+  # run the full shared QA suite, including tests/test_controller.py — which stays red until
+  # the controller is implemented.
   test:
-    if: github.repository != 'MajorDom-Systems/integration-template'
     uses: ParkerIndustries/workflows/.github/workflows/test.yml@v1
     with:
-      setup-script: |
-        git config --global url."https://${{ secrets.GITHUB_TOKEN }}@github.com/".insteadOf "https://github.com/"
-    # если нужны дополнительные параметры, добавьте их
-
-  template-selfcheck:
-    if: github.repository == 'MajorDom-Systems/integration-template'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - name: Install poetry
-        run: pipx install poetry
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.12"
-      - name: Install dependencies
-        run: |
-          git config --global url."https://${{ secrets.GITHUB_TOKEN }}@github.com/".insteadOf "https://github.com/"
-          poetry install
-      - name: Lint & type-check
-        run: |
-          poetry run ruff check .
-          poetry run ruff format --check .
-          poetry run ty check
-      - name: Tests (excluding the prefilled, expected-to-fail controller suite)
-        run: poetry run pytest --ignore=tests/test_controller.py
+      # The end-to-end tests run against virtual ESPHome devices, built (once) from tests/virtual/sketches
+      # --prefer-binary: the newest dbus-fast (a Linux-only esphome dependency) has no wheel yet and fails to build
+      setup-script: pipx install esphome --pip-args="--prefer-binary"
+    # Defaults to the team matrix ["3.12", "3.13"]. Uncomment to customize:
+    # with:
+    #   python-versions: '["3.12", "3.13", "3.14"]'
+    #   # Runs after `poetry install`, before checks (system deps, Cython build_ext, ...):
+    #   setup-script: |
+    #     sudo apt-get update && sudo apt-get install -y espeak-ng
+    #   # Teardown, always runs after checks:
+    #   post-run-script: docker compose down

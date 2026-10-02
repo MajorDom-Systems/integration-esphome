@@ -1,0 +1,11 @@
+# Same device with Noise API encryption on, on its own name and port so both can run at once.
+packages:
+  base: !include virtual.yaml
+
+esphome:
+  name: test_node_enc
+
+api:
+  port: 6054
+  encryption:
+    key: "kiO8WgmbyiIdaQ9fAFcZCdFTzRj6dzmfG/Pu3pbU9JI="

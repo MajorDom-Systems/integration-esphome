@@ -1,16 +1,20 @@
 [project]
-name = "integration-template"
+name = "majordom-esphome"
 version = "0.1.0"
 description = "MajorDom integration for ESPHome devices."
 authors = [
-    { name = "Mark Parker", email = "mark@parker-programs.com" }   
+    { name = "Mark Parker", email = "mark@parker-programs.com" }
 ]
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 keywords = [
-    "majordom", "smart-home", "home-automation", "iot",
-    "esphome", "integration"
+    "majordom",
+    "smart-home",
+    "home-automation",
+    "iot",
+    "esphome",
+    "integration",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -20,9 +24,9 @@ classifiers = [
 ]
 requires-python = ">=3.12"
 dependencies = [
-    "majordom-integration-sdk (>=0.1.5,<1.0)",
-    "aioesphomeapi >=43.0.0",
-    "pydantic (>=2.0.0,<3.0.0)",          
+    "majordom-integration-sdk (>=0.1.6,<1.0)",
+    "aioesphomeapi >=46.6.0",
+    "pydantic (>=2.13.5,<3.0.0)",
 ]
 
 [tool.poetry.dependencies]
@@ -32,7 +36,7 @@ noiseprotocol = { version = ">=0.3.1,<1.0", python = ">=3.12" }
 [project.urls]
 Homepage = "https://majordom.io"
 Documentation = "https://docs.majordom.io/device-integration"
-Repository = "https://github.com/MajorDom-Systems/integration-template"
+Repository = "https://github.com/MajorDom-Systems/integration-esphome"
 
 [dependency-groups]
 dev = [
@@ -60,12 +64,13 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
 requires-poetry = ">=2.0"
-packages = [{ include = "integration_template" }]
+packages = [{ include = "majordom_esphome" }]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 pythonpath = ["."]
 filterwarnings = ["once"]
+timeout = 30
 
 [tool.coverage.run]
 omit = ["tests/*"]
@@ -88,6 +93,14 @@ docstring-code-format = true
 "__init__.py" = ["F401"]
 "tests/*" = ["E402"]
 
+[tool.poe.tasks.install]
+shell = """
+poetry install
+echo '#!/bin/sh\\npoetry run poe check' > .git/hooks/pre-commit
+chmod +x .git/hooks/pre-commit
+echo "Pre-commit hook installed."
+"""
+
 [tool.poe.tasks.check]
 shell = """
 code=0
@@ -101,11 +114,8 @@ poetry run ruff format || code=1
 echo "\\nRunning ty:"
 poetry run ty check || code=1
 
-echo "\\nRunning package import check:"
-poetry run python -c "import integration_template; print('Package OK')" || code=1
-
 echo "\\nRunning pytest:"
-poetry run pytest -v --timeout=60 --full-trace --cov=integration_template --cov-report=xml || code=1
+poetry run pytest -v --cov=majordom_esphome --cov-report=xml || code=1
 
 echo "\\nRunning poetry build:"
 poetry build || code=1
@@ -117,3 +127,4 @@ ${ci:+git diff --exit-code}
 
 exit $code
 """
+args = [{ name = "ci", type = "boolean" }]
