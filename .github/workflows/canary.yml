@@ -27,7 +27,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install the project
-        run: pipx install poetry && poetry install
+        run: (command -v poetry || pipx install poetry) && poetry install
 
       - name: Upgrade to the latest ESPHome and aioesphomeapi
         # --prefer-binary: the newest dbus-fast (a Linux-only esphome dependency) can lack a wheel for a while
