@@ -26,10 +26,11 @@ class Sketch:
     port: int
     mac: str  # as advertised in mDNS TXT: lowercase hex, no separators
     encryption_key: str | None = None
+    directory: Path = SKETCHES_DIR  # where the yaml lives; esphome builds next to it
 
     @property
     def binary(self) -> Path:
-        return SKETCHES_DIR / ".esphome" / "build" / self.name / ".pioenvs" / self.name / "program"
+        return self.directory / ".esphome" / "build" / self.name / ".pioenvs" / self.name / "program"
 
 
 ENCRYPTION_KEY = "kiO8WgmbyiIdaQ9fAFcZCdFTzRj6dzmfG/Pu3pbU9JI="  # `api.encryption.key` of encrypted.yaml
@@ -44,7 +45,7 @@ def build(sketch: Sketch) -> None:
     """Compile the sketch to a native binary (needs the `esphome` CLI on PATH). Takes a minute or two."""
     if shutil.which("esphome") is None:
         raise RuntimeError("`esphome` CLI not found: install it (e.g. `pipx install esphome`) to build virtual devices")
-    subprocess.run(["esphome", "compile", str(SKETCHES_DIR / sketch.yaml)], check=True)
+    subprocess.run(["esphome", "compile", str(sketch.directory / sketch.yaml)], check=True)
 
 
 class VirtualDevice:

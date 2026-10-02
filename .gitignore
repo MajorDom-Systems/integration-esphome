@@ -55,3 +55,6 @@ Thumbs.db
 # Virtual ESPHome device build output (esphome also writes its own .gitignore next to the sketches)
 .esphome
 tests/virtual/sketches/.gitignore
+
+# Generated virtual nodes of the entity catalogue
+tests/virtual/nodes/

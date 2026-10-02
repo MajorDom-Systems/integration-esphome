@@ -20,6 +20,19 @@ from tests.virtual.mdns import Advert, FakeMDNS, fake_mdns
 from tests.virtual.runner import ENCRYPTED, PLAIN, SKETCHES, VirtualDevice, build
 
 
+def pytest_configure(config: pytest.Config) -> None:
+    config.addinivalue_line("markers", "catalogue: sweep over one virtual node per entity kind (run with -m catalogue)")
+
+
+@pytest.fixture(scope="session")
+def build_errors() -> dict[str, str | None]:
+    """Why a catalogue node could not be built (kind -> error), filled in by the collection hook."""
+    return _BUILD_ERRORS
+
+
+_BUILD_ERRORS: dict[str, str | None] = {}
+
+
 def pytest_collection_finish(session: pytest.Session) -> None:
     """Build the virtual devices before the first test that needs one, outside any test timeout."""
     if any(

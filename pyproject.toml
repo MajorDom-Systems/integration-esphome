@@ -71,6 +71,8 @@ asyncio_mode = "auto"
 pythonpath = ["."]
 filterwarnings = ["once"]
 timeout = 30
+# the catalogue sweep builds a node per entity kind: opt in with `-m catalogue` (the monthly canary does)
+addopts = '-m "not catalogue"'
 
 [tool.coverage.run]
 omit = ["tests/*"]
