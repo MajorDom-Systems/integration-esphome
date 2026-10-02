@@ -17,10 +17,16 @@ from aioesphomeapi import (
     LightInfo,
     LockCommand,
     LockInfo,
+    UpdateInfo,
     WaterHeaterInfo,
     WaterHeaterState,
 )
-from majordom_integration_sdk.schemas.parameter import ParameterDataType, ParameterRole, ParameterVisibility
+from majordom_integration_sdk.schemas.parameter import (
+    ParameterDataType,
+    ParameterRole,
+    ParameterUnit,
+    ParameterVisibility,
+)
 
 from majordom_esphome import mapper
 from majordom_esphome.models import (
@@ -146,3 +152,20 @@ def test_the_colour_brightness_is_only_offered_where_colour_and_white_mix():
 
     assert spec_of(rgb_only, "color_brightness") is None
     assert spec_of(rgbw, "color_brightness") is not None
+
+
+def test_firmware_update_parameters_are_hidden():
+    update: Any = UpdateInfo
+    specs = mapper.parameter_specs(update(object_id="fw", key=3, name="Firmware"), "update")
+
+    assert specs, "an update entity is still mapped"
+    assert {spec.visibility for spec in specs} == {ParameterVisibility.system}
+
+
+def test_water_heater_temperatures_are_in_celsius():
+    heater: Any = WaterHeaterInfo
+    entity = heater(object_id="boiler", key=9, name="Boiler", supported_features=1 | 2)  # current and target
+
+    for field in ("current_temperature", "target_temperature"):
+        spec = spec_of(entity, field)
+        assert spec is not None and spec.unit == ParameterUnit.celsius, field

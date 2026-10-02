@@ -27,7 +27,12 @@ from typing import Any
 
 import aioesphomeapi
 from aioesphomeapi import COMPONENT_TYPE_TO_INFO, APIClient, EntityState, LightColorCapability, WaterHeaterFeature
-from majordom_integration_sdk.schemas.parameter import ParameterDataType, ParameterRole, ParameterUnit
+from majordom_integration_sdk.schemas.parameter import (
+    ParameterDataType,
+    ParameterRole,
+    ParameterUnit,
+    ParameterVisibility,
+)
 
 from .models import ESPhomeParameter, ParameterSpec
 
@@ -42,7 +47,14 @@ UNITS = {
     "color_temperature": ParameterUnit.mired,
     "current_humidity": ParameterUnit.percentage,
     "target_humidity": ParameterUnit.percentage,
+    # ESPHome works in °C (as the hand-written climate mapping assumes)
+    "current_temperature": ParameterUnit.celsius,
+    "target_temperature": ParameterUnit.celsius,
+    "target_temperature_low": ParameterUnit.celsius,
+    "target_temperature_high": ParameterUnit.celsius,
 }
+# Kinds that are infrastructure, not a device feature: hidden (docs, Parameter UX: "firmware update -> system")
+SYSTEM_KINDS = {"update"}
 
 
 def _caps(entity: Any) -> int:
@@ -303,6 +315,8 @@ def specs(component: str, entity: Any = None, skip: frozenset[str] = frozenset()
     for field in fields_of(component):
         if field.name not in skip and (spec := _spec(component, field, entity)) is not None:
             result.append(spec)
+    if component in SYSTEM_KINDS:
+        result = [dataclasses.replace(spec, visibility=ParameterVisibility.system) for spec in result]
     return result
 
 

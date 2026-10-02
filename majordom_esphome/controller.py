@@ -267,6 +267,8 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
     def _visibility(entity: EntityInfo, spec: ParameterSpec) -> ParameterVisibility:
         """The entity's own visibility, unless the spec asks for a less prominent one (and the entity allows it)."""
         visibility = mapper.visibility_of(entity)
+        if spec.visibility == ParameterVisibility.system:  # infrastructure is hidden whatever the entity says
+            return spec.visibility
         return spec.visibility if visibility == ParameterVisibility.user and spec.visibility else visibility
 
     def _parameter_id(self, device_id: UUID, entity: EntityInfo, sub_field: str) -> UUID:
