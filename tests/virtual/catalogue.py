@@ -1,9 +1,11 @@
-"""The catalogue: one virtual node per entity kind ESPHome's API knows, generated, validated and built from recipes.
+"""The catalogue: one virtual node per entity kind ESPHome's API knows, generated and built from recipes.
 
-Modelled on the Matter integration's virtual-device catalogue: the list of kinds comes from the installed
-`aioesphomeapi`, so a library upgrade that adds a kind is noticed (`test_catalogue.py`) and, unless the kind has a
-recipe, tried with a guessed `template` platform (`python -m tests.virtual.catalogue`). Kinds that cannot run on the
-host node are listed in `UNHOSTABLE` with the reason.
+Modelled on the Matter integration's virtual-device catalogue. The list of kinds comes from the installed
+`aioesphomeapi`, so a library upgrade that adds a kind is noticed (`test_catalogue.py`) and fails until someone writes
+a recipe (or explains in `UNHOSTABLE` why the kind cannot run on the host node). A recipe is never guessed: a good one
+switches on every capability of the entity (position, speed, colour modes, ...), and every field it exposes must be
+accounted for in `EXPECTED` (mapped, with its type and role) or `UNMAPPED` (not mapped, with the reason), so the
+more a recipe configures, the more of the mapping is tested.
 
     python -m tests.virtual.catalogue            # generate, validate and build every node (in parallel)
     python -m tests.virtual.catalogue generate   # only write the yaml files
@@ -16,8 +18,10 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from aioesphomeapi import COMPONENT_TYPE_TO_INFO
+from majordom_integration_sdk.schemas.parameter import ParameterDataType as T
+from majordom_integration_sdk.schemas.parameter import ParameterRole as R
 
-from tests.virtual.runner import Sketch, build
+from tests.virtual.runner import Sketch
 
 NODES_DIR = Path(__file__).parent / "nodes"  # generated, git-ignored
 API_PORT = 6060  # one node runs at a time
@@ -246,14 +250,111 @@ water_heater:
 """,
 }
 
-# Kinds the host node cannot run, and why. A kind the library knows that is in neither table is a new kind.
+# Kinds the host node cannot run, and why (each reason was checked with `esphome config` / `esphome compile`)
 UNHOSTABLE: dict[str, str] = {
-    "siren": "ESPHome has no siren component",
-    "radio_frequency": "ESPHome has no radio_frequency component",
-    "camera": "needs camera hardware (esp32_camera)",
-    "media_player": "needs audio hardware (speaker, i2s_audio)",
-    "infrared": "no infrared platform runs on the host",
-    "update": "the only platforms (http_request, esp32_hosted) need a network stack or hardware the host lacks",
+    "siren": "ESPHome has no siren component: the kind exists in the API only",
+    "radio_frequency": "needs ir_rf_proxy with a remote_transmitter, which has no host implementation (fails to link)",
+    "infrared": "needs ir_rf_proxy with a remote_transmitter, which has no host implementation (fails to link)",
+    "camera": "needs camera hardware: the only platform is esp32_camera",
+    "media_player": "needs a speaker platform: i2s_audio is hardware, mixer and resampler wrap another speaker",
+    "update": "the http_request platform is incompatible with the host framework; esp32_hosted needs hardware",
+}
+
+# What the integration must expose for the recipe's entity: sub-field -> (data type, role)
+EXPECTED: dict[str, dict[str, tuple[T, R]]] = {
+    "binary_sensor": {"state": (T.bool, R.sensor)},
+    "sensor": {"state": (T.decimal, R.sensor)},
+    "text_sensor": {"state": (T.string, R.sensor)},
+    "switch": {"state": (T.bool, R.control)},
+    "button": {"state": (T.none, R.control)},
+    "number": {"state": (T.decimal, R.control)},
+    "select": {"state": (T.enum, R.control)},
+    "text": {"state": (T.string, R.control)},
+    "lock": {"state": (T.enum, R.sensor), "command": (T.enum, R.control)},
+    "valve": {
+        "position": (T.decimal, R.control),
+        "current_operation": (T.enum, R.sensor),
+        "stop": (T.none, R.control),
+    },
+    "cover": {"position": (T.decimal, R.control), "operation": (T.enum, R.sensor)},
+    "fan": {"state": (T.bool, R.control)},
+    "light": {
+        "state": (T.bool, R.control),
+        "brightness": (T.decimal, R.control),
+        "color_hue": (T.decimal, R.control),
+        "color_saturation": (T.decimal, R.control),
+    },
+    "climate": {
+        "mode": (T.enum, R.control),
+        "current_temperature": (T.decimal, R.sensor),
+        "target_temperature_low": (T.decimal, R.control),
+        "target_temperature_high": (T.decimal, R.control),
+    },
+    "date": {"year": (T.integer, R.sensor), "month": (T.integer, R.sensor), "day": (T.integer, R.sensor)},
+    "time": {"hour": (T.integer, R.sensor), "minute": (T.integer, R.sensor), "second": (T.integer, R.sensor)},
+    "datetime": {"epoch_seconds": (T.integer, R.control)},
+    "alarm_control_panel": {"state": (T.enum, R.sensor), "command": (T.enum, R.control)},
+    "event": {},  # one-shot events have no parameters yet
+    "water_heater": {
+        "state": (T.integer, R.sensor),  # a bit mask of flags, shown as is
+        "mode": (T.enum, R.control),
+        "current_temperature": (T.decimal, R.sensor),
+        "target_temperature": (T.decimal, R.control),
+        "target_temperature_low": (T.decimal, R.control),
+        "target_temperature_high": (T.decimal, R.control),
+        "on": (T.none, R.control),  # a command-only flag: a button, although it is really a switch
+        "away": (T.none, R.control),
+    },
+}
+
+# Fields of the entity's state or command that no parameter exposes, each with the reason. A field the library adds
+# later is not listed: the sweep fails until it is mapped or explained here.
+NOT_YET = "not mapped yet"
+UNMAPPED: dict[str, dict[str, str]] = {
+    "cover": {
+        "current_operation": "exposed as operation",
+        "legacy_state": "deprecated: position and operation replace it",
+        "stop": f"{NOT_YET}",
+        "tilt": f"{NOT_YET}",
+    },
+    "fan": {
+        field: f"{NOT_YET} (only on/off is exposed)"
+        for field in ("direction", "oscillating", "preset_mode", "speed", "speed_level")
+    },
+    "light": {
+        "red": "exposed as color_hue and color_saturation",
+        "green": "exposed as color_hue and color_saturation",
+        "blue": "exposed as color_hue and color_saturation",
+        "rgb": "exposed as color_hue and color_saturation",
+        "color_mode": "derived from the capabilities the light reports",
+        "color_brightness": NOT_YET,
+        "color_temperature": NOT_YET,
+        "cold_white": NOT_YET,
+        "warm_white": NOT_YET,
+        "white": NOT_YET,
+        "effect": NOT_YET,
+        "flash_length": "a one-off command option",
+        "transition_length": "a one-off command option",
+    },
+    "climate": {
+        "target_temperature": "this thermostat is two-point: low and high are exposed instead",
+        "unused_legacy_away": "deprecated",
+        **{
+            field: NOT_YET
+            for field in (
+                "action",
+                "current_humidity",
+                "custom_fan_mode",
+                "custom_preset",
+                "fan_mode",
+                "preset",
+                "swing_mode",
+                "target_humidity",
+            )
+        },
+    },
+    "lock": {"code": "cannot be sent without the command: not mapped yet"},
+    "alarm_control_panel": {"code": "cannot be sent without the command: not mapped yet"},
 }
 
 
@@ -262,26 +363,24 @@ def all_kinds() -> list[str]:
     return list(COMPONENT_TYPE_TO_INFO)
 
 
-def guessed_recipe(kind: str) -> str:
-    """A new kind without a recipe: try the `template` platform with nothing but a name."""
-    return f'{kind}:\n  - platform: template\n    name: "Probe"\n'
-
-
 def sketch_for(kind: str) -> Sketch:
     index = all_kinds().index(kind)
     name = f"cat_{kind}"
     return Sketch(f"{name}.yaml", name, API_PORT, f"983569{index:06x}", directory=NODES_DIR)
 
 
+def recipe_kinds() -> list[str]:
+    """The kinds that have a recipe, in the library's order."""
+    return [kind for kind in all_kinds() if kind in RECIPES]
+
+
 def generate(kinds: list[str] | None = None) -> list[str]:
-    """Write the node yaml of every hostable kind; returns the kinds written (guessed recipes included)."""
+    """Write the node yaml of every kind that has a recipe; returns the kinds written."""
     NODES_DIR.mkdir(exist_ok=True)
     written = []
-    for kind in kinds or all_kinds():
-        if kind in UNHOSTABLE:
-            continue
+    for kind in kinds or recipe_kinds():
         sketch = sketch_for(kind)
-        body = RECIPES.get(kind) or guessed_recipe(kind)
+        body = RECIPES[kind]
         (NODES_DIR / sketch.yaml).write_text(
             HEADER.format(name=sketch.name, mac=_colon(sketch.mac), port=API_PORT) + body
         )
@@ -293,37 +392,31 @@ def _colon(mac: str) -> str:
     return ":".join(mac[i : i + 2] for i in range(0, 12, 2))
 
 
-def valid(kind: str) -> bool:
-    """Whether esphome accepts the node (used to try guessed recipes without failing the whole build)."""
-    sketch = sketch_for(kind)
-    result = subprocess.run(["esphome", "config", str(NODES_DIR / sketch.yaml)], capture_output=True, text=True)
-    return result.returncode == 0
-
-
-def hosted_kinds() -> list[str]:
-    """The kinds with a generated, built node: what the sweep runs over (no recipe needed for a new kind)."""
-    if not NODES_DIR.exists():
-        return []
-    return [kind for kind in all_kinds() if sketch_for(kind).binary.exists()]
+def compile_node(sketch: Sketch) -> str | None:
+    """Compile a node; returns None, or the compiler's last lines when it fails (the reason for the test failure)."""
+    result = subprocess.run(
+        ["esphome", "compile", str(sketch.directory / sketch.yaml)], capture_output=True, text=True, check=False
+    )
+    if result.returncode == 0:
+        return None
+    noise = ("blake2", "hashlib", "Traceback", "File ", "raise ", "~~", "^^", "globals(")
+    lines = [
+        line
+        for line in (result.stdout + result.stderr).splitlines()
+        if line.strip() and not any(n in line for n in noise)
+    ]
+    return f"esphome compile failed ({result.returncode}):\n" + "\n".join(lines[-15:])
 
 
 def build_all(kinds: list[str] | None = None, workers: int = 3) -> dict[str, str | None]:
-    """Generate, validate and build the nodes in parallel; returns kind -> error (None when built)."""
+    """Generate and build the nodes in parallel; returns kind -> why it could not be built (None when built)."""
     if shutil.which("esphome") is None:
         raise RuntimeError("`esphome` CLI not found: install it (e.g. `pipx install esphome`)")
     todo = generate(kinds)
 
     def one(kind: str) -> tuple[str, str | None]:
         sketch = sketch_for(kind)
-        if sketch.binary.exists():
-            return kind, None
-        if kind not in RECIPES and not valid(kind):
-            return kind, "guessed template recipe is not valid: add a recipe or list the kind in UNHOSTABLE"
-        try:
-            build(sketch)
-        except subprocess.CalledProcessError as exc:
-            return kind, f"esphome compile failed ({exc.returncode})"
-        return kind, None
+        return kind, None if sketch.binary.exists() else compile_node(sketch)
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
         return dict(pool.map(one, todo))

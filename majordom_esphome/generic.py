@@ -77,6 +77,23 @@ def _state_class(component: str) -> type[EntityState] | None:
     return None
 
 
+def api_fields(component: str) -> tuple[set[str], set[str]]:
+    """Every field of the entity's state and every argument of its command, whether or not it is mapped."""
+    state_class = _state_class(component)
+    state = (
+        {f.name for f in dataclasses.fields(typing.cast(Any, state_class)) if f.name not in STATE_NOISE}
+        if state_class is not None
+        else set()
+    )
+    command = getattr(APIClient, f"{component}_command", None)
+    arguments = (
+        {name for name in inspect.signature(command).parameters if name not in ("self", "key", "device_id")}
+        if command is not None
+        else set()
+    )
+    return state, arguments
+
+
 @cache
 def fields_of(component: str) -> tuple[Field, ...]:
     state_class = _state_class(component)

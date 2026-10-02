@@ -23,9 +23,6 @@ from tests.virtual import catalogue
 from tests.virtual.mdns import Advert, FakeMDNS
 from tests.virtual.runner import VirtualDevice
 
-# Kinds whose node legitimately has no parameters: the integration skips them on purpose
-WITHOUT_PARAMETERS = generic.SKIPPED
-
 
 def test_every_kind_the_library_knows_is_mapped_or_skipped_on_purpose():
     unknown = [
@@ -34,20 +31,29 @@ def test_every_kind_the_library_knows_is_mapped_or_skipped_on_purpose():
         if kind not in mapper._HAND_WRITTEN and not generic.is_mapped(kind) and kind not in generic.SKIPPED
     ]
 
-    assert unknown == [], "new entity kinds with no mapping: map them, or add them to generic.SKIPPED with a reason"
+    assert unknown == [], (
+        f"new entity kinds with no mapping: map {unknown}, or add them to generic.SKIPPED with a reason"
+    )
 
 
 def test_every_kind_the_library_knows_has_a_recipe_or_a_reason():
     unexplained = [k for k in catalogue.all_kinds() if k not in catalogue.RECIPES and k not in catalogue.UNHOSTABLE]
 
-    assert unexplained == [], "new entity kinds: add a recipe to catalogue.RECIPES, or a reason to catalogue.UNHOSTABLE"
+    assert unexplained == [], (
+        f"new entity kinds {unexplained}: write a recipe in catalogue.RECIPES (switch on every capability of the "
+        "entity, so every field it exposes is tested), with its EXPECTED parameters and UNMAPPED fields, or explain in "
+        "catalogue.UNHOSTABLE why the host node cannot run it"
+    )
 
 
-def test_the_catalogue_tables_only_name_kinds_the_library_knows():
-    stale = (set(catalogue.RECIPES) | set(catalogue.UNHOSTABLE)) - set(catalogue.all_kinds())
+def test_the_catalogue_tables_agree():
+    kinds = set(catalogue.all_kinds())
+    named = set(catalogue.RECIPES) | set(catalogue.UNHOSTABLE) | set(catalogue.EXPECTED) | set(catalogue.UNMAPPED)
 
-    assert stale == set(), f"kinds the library no longer knows: {sorted(stale)}"
+    assert named - kinds == set(), f"kinds the library no longer knows: {sorted(named - kinds)}"
     assert set(catalogue.RECIPES) & set(catalogue.UNHOSTABLE) == set()
+    assert set(catalogue.EXPECTED) == set(catalogue.RECIPES), "every recipe needs its EXPECTED parameters, and back"
+    assert set(catalogue.UNMAPPED) <= set(catalogue.RECIPES)
 
 
 def sample_value(parameter: ESPhomeParameter) -> Any:
@@ -70,7 +76,7 @@ def sample_value(parameter: ESPhomeParameter) -> Any:
 
 @pytest.mark.catalogue
 @pytest.mark.timeout(120)
-@pytest.mark.parametrize("kind", [k for k in catalogue.all_kinds() if k not in catalogue.UNHOSTABLE])
+@pytest.mark.parametrize("kind", catalogue.recipe_kinds())
 async def test_every_entity_kind_works_end_to_end(
     kind: str, controller: ESPhomeController, mdns: FakeMDNS, output, build_errors: dict[str, str | None]
 ):
@@ -88,10 +94,21 @@ async def test_every_entity_kind_works_end_to_end(
         async with controller.dependencies.make_device_repository() as repo:
             device = await repo.get(discovery.id, as_=ESPhomeDevice)
         assert device is not None
-        if kind not in WITHOUT_PARAMETERS:
-            assert device.parameters, f"a {kind} node produced no parameters"
         assert {p.integration_data.component_type for p in device.parameters} <= {kind}
         assert len({p.id for p in device.parameters}) == len(device.parameters)
+
+        # every parameter is the one the recipe's entity must produce ...
+        actual = {p.integration_data.sub_field: (p.data_type, p.role) for p in device.parameters}
+        assert actual == catalogue.EXPECTED[kind]
+
+        # ... and every field of the entity's state and command is either exposed or explained
+        state, arguments = generic.api_fields(kind)
+        unmapped = (state | arguments) - set(actual)
+        explained = set(catalogue.UNMAPPED.get(kind, {}))
+        assert unmapped == explained, (
+            f"{kind}: fields neither mapped nor explained in UNMAPPED: {sorted(unmapped - explained)}; "
+            f"explained but now mapped or gone: {sorted(explained - unmapped)}"
+        )
 
         await asyncio.sleep(1.5)  # the node pushes its initial states
         assert_values_match_parameters(output, device)

@@ -186,8 +186,10 @@ percentages, and a command-only flag (a valve's `stop`) becomes a button. Comman
 `tests/test_catalogue.py` and `tests/virtual/catalogue.py` mirror the Matter integration's virtual-device catalogue.
 The list of entity kinds is whatever the installed `aioesphomeapi` knows. Fast checks (always run) fail when a kind is
 neither mapped by the integration nor skipped on purpose, or has neither a recipe nor a reason it cannot run on the
-host node. The sweep (`poetry run pytest -m catalogue`) builds one virtual node per kind in parallel, pairs it, reads
-its states, sends a valid command to every control parameter and checks that the connection survives and every value
+host node. Recipes are written by hand, never guessed: each one switches on every capability of its entity and comes
+with the exact parameters it must produce (`EXPECTED`) and every state or command field that is deliberately not
+exposed, with the reason (`UNMAPPED`), so a field ESPHome adds later fails the sweep until it is mapped or explained. The sweep (`poetry run pytest -m catalogue`) builds one virtual node per recipe in parallel, pairs it, checks
+its parameters against `EXPECTED` and `UNMAPPED`, reads its states, sends a valid command to every control parameter and checks that the connection survives and every value
 has the declared type. `.github/workflows/canary.yml` runs everything monthly against the latest ESPHome and
 `aioesphomeapi` and goes red when upstream adds something unsupported.
 
