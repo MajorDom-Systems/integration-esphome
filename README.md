@@ -158,7 +158,7 @@ defaults:
 | Entity | Parameters |
 |--------|------------|
 | switch, fan | `state` (bool) |
-| light | `state`, `brightness` (%) if the light dims, `color_hue` (°) and `color_saturation` (%) if it supports RGB; settings: `transition_length` (s, kept by the integration and added to every later command of the light) and `flash` (a command with its `length` as argument) |
+| light | `state`, `brightness` (%) if the light dims, `color_hue` (°) and `color_saturation` (%) if it supports RGB; settings: `transition_length` (s, kept by the integration and added to every later command of the light) and `flash` (a `struct` command with its `length` as argument) |
 | cover | `position` (%), `operation` (`IDLE` / `IS_OPENING` / `IS_CLOSING`, read-only) |
 | climate | `mode` (`enum` of the modes it supports), `current_temperature`, `target_temperature` or `target_temperature_low/high` |
 | number | `state` with the device's `min` / `max` / `step` |
@@ -179,8 +179,10 @@ added by the generic mapping as a `setting` parameter (`majordom_esphome/generic
 dropped silently: a fan's speed level, direction, oscillation and presets; a cover's tilt and stop; a light's colour
 temperature, white and effects; a climate's action, fan, swing and preset modes and humidity. A water heater's state bit mask becomes `on` and `away` switches; a
 date or time is one `struct` parameter whose fields are its parts; a command that needs a code (a lock or alarm panel
-that requires one) is a `command_with_code` command with the command and the code as arguments, typed when used and
-never stored (codes are security material). A field is only added when
+that requires one) is a `command_with_code` `struct` command with the command and the code as arguments, next to a
+`code` setting holding a default code: a code typed with the command wins, else the default is sent with every command
+of the entity, so one-tap actions and automations work once the user opts in. Commands with arguments are `struct`
+parameters with the arguments as `fields`, as the SDK describes. A field is only added when
 the entity says it supports it, enums are limited to the supported members, option lists (effects, presets) become
 enums like a select, and the limits the entity reports (speed count, mireds, humidity) are used. The few fields that
 are exposed under another name or not at all (RGB channels, deprecated fields) are listed with the reason in

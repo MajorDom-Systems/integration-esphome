@@ -288,6 +288,8 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
         settings = device.integration_data.settings if device is not None else {}
         for entity in entities.values():
             for field, value in settings.get(entity.object_id, {}).items():
+                if value is None:  # a cleared setting
+                    continue
                 parameter_id = self._parameter_id(device_id, entity, field)
                 events.append(DeviceParameterChange(device_id=device_id, parameter_id=parameter_id, value=value))
         if events:

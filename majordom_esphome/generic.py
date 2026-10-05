@@ -9,7 +9,10 @@ fields:
 - a command that needs several arguments at once (a date: year, month, day) becomes one `struct` parameter whose
   sub-parameters are the arguments, readable and writable;
 - an optional argument that can only be sent together with a required one (a lock's `code` next to its `command`)
-  becomes a `none` command whose sub-parameters are both arguments, typed when the command is used and never stored.
+  becomes a `struct` command whose sub-parameters are both arguments, plus a `setting` holding a default for it
+  (a default code) that every command of the entity falls back to when it is sent without one.
+
+Commands with arguments are `struct` parameters with the arguments as `fields`, as the SDK describes.
 
 Hand-written mappings (`mapper.py`) win where the generic result is not good enough for the user.
 """
@@ -18,7 +21,7 @@ import dataclasses
 import inspect
 import math
 import typing
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from enum import IntEnum, IntFlag
 from functools import cache
@@ -315,9 +318,20 @@ def specs(component: str, entity: Any = None, skip: frozenset[str] = frozenset()
     for field in fields_of(component):
         if field.name not in skip and (spec := _spec(component, field, entity)) is not None:
             result.append(spec)
+            result += _defaults(field, spec)
     if component in SYSTEM_KINDS:
         result = [dataclasses.replace(spec, visibility=ParameterVisibility.system) for spec in result]
     return result
+
+
+def _defaults(field: Field, spec: ParameterSpec) -> list[ParameterSpec]:
+    """The kept default of a command's optional argument (a lock's default code), offered next to that command."""
+    if not field.is_group or field.in_state or len(spec.fields) < 2:
+        return []
+    optional = spec.fields[-1]
+    return [
+        dataclasses.replace(optional, role=ParameterRole.control, visibility=ParameterVisibility.setting, local=True)
+    ]
 
 
 def _spec(component: str, field: Field, entity: Any) -> ParameterSpec | None:
@@ -327,8 +341,7 @@ def _spec(component: str, field: Field, entity: Any) -> ParameterSpec | None:
     role = ParameterRole.control if field.in_command else ParameterRole.sensor
     if field.is_group:
         children = tuple(spec for child in field.children if (spec := _spec(component, child, entity)) is not None)
-        data_type = ParameterDataType.struct if field.in_state else ParameterDataType.none
-        return ParameterSpec(field.name, data_type, role, fields=children)
+        return ParameterSpec(field.name, ParameterDataType.struct, role, fields=children)
     unit = UNITS.get(field.name, ParameterUnit.plain)
     low, high = (
         LIMITS[key](entity) if entity is not None and key in LIMITS else FIELD_LIMITS.get(field.name, (None, None))
@@ -419,19 +432,35 @@ def as_number(value: Any, parameter: ESPhomeParameter) -> float:
     return number
 
 
-def command_args(component: str, parameter: ESPhomeParameter, value: Any) -> dict[str, Any]:
-    """Keyword arguments (without the key) of the `<component>_command` method that applies `value`."""
+def command_args(
+    component: str, parameter: ESPhomeParameter, value: Any, settings: Mapping[str, Any] | None = None
+) -> dict[str, Any]:
+    """Keyword arguments (without the key) of the `<component>_command` method that applies `value`.
+
+    `settings` are the entity's kept defaults (field -> value): an optional argument left out falls back to them.
+    """
+    settings = settings or {}
     name = parameter.integration_data.sub_field or ""
     field = next((f for f in fields_of(component) if f.name == name and f.in_command), None)
     if field is None:
         raise ValueError(f"{parameter.name} cannot be set")
     if field.is_group:
-        return _group_args(component, field, parameter, value)
-    return {name: _to_device(component, field, parameter, value)}
+        return _group_args(component, field, parameter, value, settings)
+    args = {name: _to_device(component, field, parameter, value)}
+    for group in fields_of(component):  # e.g. a plain lock command still carries the default code
+        if group.is_group and not group.in_state and group.children[0].name == name:
+            args |= {o.name: settings[o.name] for o in group.children[1:] if settings.get(o.name) is not None}
+    return args
 
 
-def _group_args(component: str, field: Field, parameter: ESPhomeParameter, value: Any) -> dict[str, Any]:
-    """The arguments of a group: the value is a dict keyed by sub-parameter id (as the SDK specifies) or name."""
+def _group_args(
+    component: str, field: Field, parameter: ESPhomeParameter, value: Any, settings: Mapping[str, Any]
+) -> dict[str, Any]:
+    """The arguments of a group: the value is a dict keyed by sub-parameter id (as the SDK specifies) or name.
+
+    In a command with an optional argument (`<main>_with_<optional>`) the optional one may be left out: its kept
+    default is used, if any.
+    """
     if not isinstance(value, dict):
         raise ValueError(f"{parameter.name}: expected the values of {[c.name for c in field.children]}, got {value!r}")
     children = {sub.integration_data.sub_field: sub for sub in sub_parameters(parameter)}
@@ -442,6 +471,10 @@ def _group_args(component: str, field: Field, parameter: ESPhomeParameter, value
         if sub is None:
             continue  # not offered by this entity
         raw = by_key.get(str(sub.id), by_key.get(child.name))
+        if raw is None and not field.in_state and child is not field.children[0]:  # an optional argument
+            if settings.get(child.name) is not None:
+                args[child.name] = settings[child.name]
+            continue
         if raw is None:
             raise ValueError(f"{parameter.name}: {child.name} is missing")
         args[child.name] = _to_device(component, child, sub, raw)

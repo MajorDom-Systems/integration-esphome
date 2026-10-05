@@ -161,7 +161,7 @@ def _hand_written_specs(entity: EntityInfo, component: ESPhomeComponentType) -> 
                 # flash the light for a while: a command with one argument
                 ParameterSpec(
                     "flash",
-                    ParameterDataType.none,
+                    ParameterDataType.struct,
                     control,
                     visibility=setting,
                     fields=(ParameterSpec("length", decimal, control, seconds, 0, None),),
@@ -257,7 +257,7 @@ def state_values(entity: EntityInfo, state: EntityState) -> dict[str, Any]:
 
 
 # Settings the integration keeps (nothing is sent to the device when they change), by (component, field)
-LOCAL_SETTINGS = {("light", "transition_length")}
+LOCAL_SETTINGS = {("light", "transition_length"), ("lock", "code"), ("alarm_control_panel", "code")}
 DEFAULT_FLASH_LENGTH = 2.0  # seconds, for a tap that sends no length
 
 
@@ -267,10 +267,12 @@ def is_local(parameter: ESPhomeParameter) -> bool:
 
 
 def local_value(parameter: ESPhomeParameter, value: Any) -> Any:
-    """A setting's value as it is kept, validated like a command value."""
+    """A setting's value as it is kept, validated like a command value; an empty value clears it."""
+    if value is None or value == "":
+        return None
     if parameter.data_type == ParameterDataType.decimal:
         return _as_number(value, parameter)
-    return value
+    return str(value) if parameter.data_type == ParameterDataType.string else value
 
 
 def build_command_args(
@@ -332,7 +334,7 @@ def build_command_args(
         case ESPhomeComponentType.CLIMATE, str() as target if target.startswith("target_temperature"):
             args[target] = _as_number(value, parameter)
         case _:  # a field the hand-written mapping does not cover: the generic one does
-            args.update(generic.command_args(data.component_type, parameter, value))
+            args.update(generic.command_args(data.component_type, parameter, value, settings))
     transition = (settings or {}).get("transition_length")
     if data.component_type == ESPhomeComponentType.LIGHT and sub_field != "flash" and transition:
         args["transition_length"] = float(transition)
