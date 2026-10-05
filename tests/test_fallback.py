@@ -12,7 +12,7 @@ import pytest_asyncio
 from majordom_integration_sdk.schemas.command import DeviceCommand
 from majordom_integration_sdk.schemas.parameter import ParameterDataType as T
 from majordom_integration_sdk.schemas.parameter import ParameterRole as R
-from majordom_integration_sdk.schemas.parameter import ParameterUnit
+from majordom_integration_sdk.schemas.parameter import ParameterUnit, ParameterVisibility
 
 from majordom_esphome.controller import ESPhomeController
 from majordom_esphome.models import ESPhomeDevice
@@ -64,7 +64,8 @@ async def test_unmapped_entities_get_parameters_from_the_library_types(extras: E
         ("Label", "state"): (T.string, R.control),
         ("House Alarm", "state"): (T.enum, R.sensor),
         ("House Alarm", "command"): (T.enum, R.control),
-        ("House Alarm", "command_with_code"): (T.none, R.control),  # the panel requires a code
+        ("House Alarm", "command_with_code"): (T.struct, R.control),  # the panel requires a code
+        ("House Alarm", "code"): (T.string, R.control),  # its default code, a setting
         ("Date", "date"): (T.struct, R.control),  # year, month and day as its fields
     }  # the doorbell (an event) is skipped
 
@@ -173,3 +174,18 @@ async def test_a_command_that_needs_a_code_takes_it_as_an_argument(
     )
 
     await wait_for_value(output, param(extras, "House Alarm", "state"), lambda v: v != 0)  # no longer DISARMED
+
+
+async def test_a_kept_default_code_lets_a_plain_command_through(
+    controller: ESPhomeController, extras: ESPhomeDevice, output
+):
+    code, state = param(extras, "House Alarm", "code"), param(extras, "House Alarm", "state")
+    assert code.visibility == ParameterVisibility.setting
+    await send(controller, extras, "House Alarm", "command", 1)  # ARM_AWAY: arming needs no code on this panel
+    await wait_for_value(output, state, lambda v: v == 2, timeout=10)  # ARMED_AWAY after its arming time
+
+    await send(controller, extras, "House Alarm", "code", "1234")
+    await wait_for_value(output, code, lambda v: v == "1234")  # echoed, so the Hub stores it
+    await send(controller, extras, "House Alarm", "command", 0)  # DISARM, typed without a code: it needs one
+
+    await wait_for_value(output, state, lambda v: v == 0, timeout=10)  # DISARMED: the kept code was sent

@@ -111,22 +111,38 @@ def test_a_custom_fan_mode_command_sends_the_option_name():
         mapper.build_command_args(parameter, 5, {})
 
 
-def test_a_lock_that_requires_a_code_offers_a_command_with_the_code_as_argument():
+def test_a_lock_that_requires_a_code_offers_a_command_with_the_code_and_a_default_code():
     lock: Any = LockInfo
     entity = lock(object_id="door", key=5, name="Door", requires_code=True)
     spec = spec_of(entity, "command_with_code")
-    assert spec is not None
-    assert spec.data_type == ParameterDataType.none
+    default = spec_of(entity, "code")
+    assert spec is not None and default is not None
+    assert spec.data_type == ParameterDataType.struct  # a command with arguments: fields of a struct
     assert [child.sub_field for child in spec.fields] == ["command", "code"]
+    assert (default.data_type, default.visibility, default.local) == (
+        ParameterDataType.string,
+        ParameterVisibility.setting,
+        True,
+    )
     parameter = parameter_of(entity, spec)
     command, code = parameter.fields or []
 
-    args = mapper.build_command_args(parameter, {str(command.id): 1, str(code.id): "1234"}, {})
+    typed = mapper.build_command_args(parameter, {str(command.id): 1, str(code.id): "1234"}, {}, {"code": "9999"})
+    fallback = mapper.build_command_args(parameter, {str(command.id): 1}, {}, {"code": "9999"})
+    without = mapper.build_command_args(parameter, {str(command.id): 1}, {})
 
-    assert args == {"key": 5, "command": LockCommand.LOCK, "code": "1234"}
-    with pytest.raises(ValueError):  # the code is part of the command: it is never sent without it
-        mapper.build_command_args(parameter, {str(command.id): 1}, {})
+    assert typed == {"key": 5, "command": LockCommand.LOCK, "code": "1234"}  # a typed code wins
+    assert fallback == {"key": 5, "command": LockCommand.LOCK, "code": "9999"}  # else the kept default
+    assert without == {"key": 5, "command": LockCommand.LOCK}  # else none: the lock decides
+    plain = spec_of(entity, "command")
+    assert plain is not None
+    assert mapper.build_command_args(parameter_of(entity, plain), 0, {}, {"code": "9999"}) == {
+        "key": 5,
+        "command": LockCommand.UNLOCK,
+        "code": "9999",
+    }
     assert spec_of(lock(object_id="door", key=5, name="Door", requires_code=False), "command_with_code") is None
+    assert spec_of(lock(object_id="door", key=5, name="Door", requires_code=False), "code") is None
 
 
 def test_water_heater_flags_are_switches_of_the_state_bit_mask():

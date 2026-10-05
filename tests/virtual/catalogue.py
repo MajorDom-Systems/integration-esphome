@@ -404,7 +404,7 @@ EXPECTED: dict[str, dict[str, tuple[T, R]]] = {
         "effect": (T.enum, R.control),
         "color_brightness": (T.decimal, R.control),
         "transition_length": (T.decimal, R.control),
-        "flash": (T.none, R.control),
+        "flash": (T.struct, R.control),
     },
     "climate": {
         "mode": (T.enum, R.control),
@@ -427,7 +427,7 @@ EXPECTED: dict[str, dict[str, tuple[T, R]]] = {
         "white": (T.decimal, R.control),
         "color_brightness": (T.decimal, R.control),
         "transition_length": (T.decimal, R.control),
-        "flash": (T.none, R.control),
+        "flash": (T.struct, R.control),
     },
     "climate/single-point": {
         "mode": (T.enum, R.control),
@@ -441,7 +441,8 @@ EXPECTED: dict[str, dict[str, tuple[T, R]]] = {
     "alarm_control_panel": {
         "state": (T.enum, R.sensor),
         "command": (T.enum, R.control),
-        "command_with_code": (T.none, R.control),  # command and code as its fields: this panel requires a code
+        "command_with_code": (T.struct, R.control),  # command and code as its fields: this panel requires a code
+        "code": (T.string, R.control),  # the default code, a setting the commands fall back to
     },
     "event": {},  # one-shot events have no parameters yet
     "water_heater": {
