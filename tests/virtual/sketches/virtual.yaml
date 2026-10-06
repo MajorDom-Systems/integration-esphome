@@ -11,6 +11,7 @@ api:
   port: 6053
 
 logger:
+  level: VERBOSE  # light calls log their transition and flash lengths at VERBOSE since ESPHome 2026.x
 
 sensor:
   - platform: template
