@@ -16,3 +16,23 @@ jobs:
       stable-branch: master
       # the QA run builds the virtual ESPHome nodes; --prefer-binary: see test.yml
       setup-script: pipx install esphome --pip-args="--prefer-binary"
+
+  # PyPI publish runs HERE, in the caller — Trusted Publishing can't match a reusable workflow.
+  publish-pypi:
+    name: Publish to PyPI
+    needs: release
+    runs-on: ubuntu-latest
+    environment:
+      name: release
+      url: https://pypi.org/p/majordom-esphome
+    permissions:
+      id-token: write
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@v8
+        with:
+          pattern: dist-*
+          merge-multiple: true
+          path: dist/
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
