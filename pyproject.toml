@@ -6,7 +6,7 @@ authors = [
     { name = "Mark Parker", email = "mark@parker-programs.com" }
 ]
 readme = "README.md"
-license = "Apache-2.0"
+license = "LicenseRef-PolyForm-Noncommercial-1.0.0"
 license-files = ["LICENSE"]
 keywords = [
     "majordom",
