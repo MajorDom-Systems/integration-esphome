@@ -16,6 +16,7 @@ from majordom_integration_sdk.testing import RecordingControllerOutput, build_te
 from majordom_esphome.controller import ESPhomeController
 from majordom_esphome.models import ESPhomeDevice
 from tests.helpers import hub_creates_device
+from tests.virtual import catalogue
 from tests.virtual.mdns import Advert, FakeMDNS, fake_mdns
 from tests.virtual.runner import ENCRYPTED, PLAIN, SKETCHES, VirtualDevice, build
 
@@ -42,6 +43,8 @@ def pytest_collection_finish(session: pytest.Session) -> None:
         for sketch in SKETCHES:
             if not sketch.binary.exists():
                 build(sketch)
+    if any(item.get_closest_marker("catalogue") for item in session.items):
+        _BUILD_ERRORS.update(catalogue.build_all())
 
 
 @pytest.fixture
