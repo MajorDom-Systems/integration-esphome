@@ -1,7 +1,7 @@
 [project]
 name = "majordom-esphome"
 version = "0.1.0"
-description = "MajorDom integration for ESPHome devices."
+description = "ESPHome integration for MajorDom — bridges ESPHome devices into the MajorDom language."
 authors = [
     { name = "Mark Parker", email = "mark@parker-programs.com" }
 ]
