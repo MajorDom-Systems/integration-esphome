@@ -14,6 +14,7 @@ from uuid import UUID
 from aioesphomeapi import ZERO_NOISE_PSK, EntityInfo, EntityState
 from bleak.backends.device import BLEDevice
 from bleak.backends.scanner import AdvertisementData
+from majordom_integration_sdk import Need
 from majordom_integration_sdk.controller import AbstractController
 from majordom_integration_sdk.discovery.ble_discovery import BLEDiscoveryInfo, BLEDiscoveryService
 from majordom_integration_sdk.discovery.zeroconf_discovery import ZeroconfDiscoveryInfo, ZeroconfDiscoveryService
@@ -68,6 +69,8 @@ class _ImprovNode:
 
 class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
     name = "esphome"
+    # Devices on Thread reach the hub through a border router; Wi-Fi devices need nothing.
+    needs = [Need("thread", ["otbr-rest"], required=False)]
 
     def __init__(self, dependencies: AbstractController.Dependencies) -> None:
         super().__init__(dependencies)
