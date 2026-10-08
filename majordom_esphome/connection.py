@@ -12,6 +12,9 @@ from aioesphomeapi import (
     InvalidEncryptionKeyAPIError,
     RequiresEncryptionAPIError,
 )
+from majordom_integration_sdk.discovery import BLEService
+
+from majordom_esphome.bluetooth import ESPhomeBluetoothProxy
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +67,7 @@ class ESPhomeDeviceConnection:
         on_state: StateCallback,
         on_availability: AvailabilityCallback | None = None,
         on_addresses: AddressesCallback | None = None,
+        ble: BLEService | None = None,  # lends its Bluetooth proxy, if it is one, to this service
     ) -> None:
         self.device_id = device_id
         self.addresses = list(addresses)  # hostname and IPs, tried in order; reordered by what worked
@@ -72,6 +76,8 @@ class ESPhomeDeviceConnection:
         self.on_state_callback = on_state
         self.on_availability_callback = on_availability
         self.on_addresses_callback = on_addresses
+        self.ble = ble
+        self._proxy: ESPhomeBluetoothProxy | None = None
 
         self.last_error: Exception | None = None
         self._client: APIClient | None = None
@@ -207,6 +213,7 @@ class ESPhomeDeviceConnection:
                 await self._close_client()
                 continue
             await self._remember(address, failed)
+            await self._lend_bluetooth()
             return
         raise error
 
@@ -220,6 +227,11 @@ class ESPhomeDeviceConnection:
         self.last_error = None
         self._ready.set()
         logger.info("Connected to ESPHome device %s at %s:%s", self.device_id, address, self.port)
+
+    async def _lend_bluetooth(self) -> None:
+        if self.ble and self._client and (proxy := await ESPhomeBluetoothProxy.of(self._client)):
+            self._proxy = proxy
+            await self.ble.add_source(proxy)
 
     async def _remember(self, address: str, failed: list[str]) -> None:
         """Working address first, addresses that failed this time last."""
@@ -264,6 +276,9 @@ class ESPhomeDeviceConnection:
             logger.exception("Error reporting availability of %s", self.device_id)
 
     async def _close_client(self) -> None:
+        if self._proxy:
+            await self.ble.remove_source(self._proxy.name)
+            self._proxy = None
         client, self._client = self._client, None
         if client is not None:
             with contextlib.suppress(Exception):

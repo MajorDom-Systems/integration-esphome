@@ -34,6 +34,15 @@ class ESPhomeComponentType(StrEnum):
     TEXT_SENSOR = "text_sensor"
 
 
+class ESPhomeSettings(BaseModel):
+    bluetooth_proxies: bool = Field(
+        True,
+        title="Bluetooth proxies",
+        description="Reach Bluetooth devices through ESPHome devices with bluetooth_proxy. A proxy serves one hub "
+        "at a time: turn this off while Home Assistant uses them.",
+    )
+
+
 class ESPhomeDeviceIntegrationData(BaseModel):
     device_name: str | None = None
     unique_id: str | None = None

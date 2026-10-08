@@ -34,6 +34,7 @@ from .models import (
     ESPhomeDeviceIntegrationData,
     ESPhomeParameter,
     ESPhomeParameterIntegrationData,
+    ESPhomeSettings,
     ParameterSpec,
 )
 
@@ -71,6 +72,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
     name = "esphome"
     # Devices on Thread reach the hub through a border router; Wi-Fi devices need nothing.
     needs = [Need("thread", ["otbr-rest"], required=False)]
+    settings = ESPhomeSettings
 
     def __init__(self, dependencies: AbstractController.Dependencies) -> None:
         super().__init__(dependencies)
@@ -86,6 +88,10 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
         self._paired: set[UUID] = set()
         self._tasks: set[asyncio.Task[None]] = set()
         self._states: dict[UUID, dict[int, EntityState]] = {}
+
+    @property
+    def _settings(self) -> ESPhomeSettings:
+        return self.dependencies.settings or ESPhomeSettings()
 
     @property
     def discoveries(self) -> dict[UUID, Discovery]:
@@ -286,6 +292,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
             on_state=self._on_state,
             on_availability=self._on_availability,
             on_addresses=self._on_addresses,
+            ble=self.dependencies.ble_discovery_service if self._settings.bluetooth_proxies else None,
         )
 
     def _spawn(self, coroutine: Coroutine[Any, Any, None]) -> None:
