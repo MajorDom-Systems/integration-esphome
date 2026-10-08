@@ -125,7 +125,7 @@ poetry build || code=1
 echo "\\nRunning poetry check:"
 poetry check || code=1
 
-${ci:+git diff --exit-code}
+${ci:+git diff --exit-code} || code=1
 
 exit $code
 """
