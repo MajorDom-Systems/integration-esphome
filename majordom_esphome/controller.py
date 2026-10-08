@@ -338,10 +338,10 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
         return key
 
     async def _on_state(self, device_id: UUID, entity: EntityInfo, state: EntityState) -> None:
+        self._states.setdefault(device_id, {})[state.key] = state  # kept while pairing: the snapshot then reports them
         if device_id not in self._connections:  # still pairing, or already unpaired: the Hub does not know the device
             return
         try:
-            self._states.setdefault(device_id, {})[state.key] = state
             events = self._events(device_id, entity, state)
             if events:
                 await self.dependencies.output.controller_did_receive_events(self, events)
@@ -536,6 +536,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
         except Exception as exc:
             if conn is not None:
                 await conn.stop()
+            self._states.pop(discovery.id, None)
             logger.exception("Pairing %s failed", discovery.id)
             reason = str(exc) if isinstance(exc, ValueError | LookupError) else describe_error(exc.__cause__ or exc)
             failed = known.model_copy(update={"last_error": reason})
