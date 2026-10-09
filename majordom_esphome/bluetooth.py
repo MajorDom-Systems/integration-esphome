@@ -19,6 +19,7 @@ from majordom_integration_sdk.discovery.ble_discovery import OnAdvertisement
 _PROPERTIES = {0x02: "read", 0x04: "write-without-response", 0x08: "write", 0x10: "notify", 0x20: "indicate"}
 _CCCD = "00002902-0000-1000-8000-00805f9b34fb"
 _CONNECTS = BluetoothProxyFeature.ACTIVE_CONNECTIONS | BluetoothProxyFeature.REMOTE_CACHING
+_REMEMBERED = 1024  # devices kept merged; phones rotate their address, so the oldest are dropped
 
 
 class ESPhomeBluetoothProxy:
@@ -51,7 +52,7 @@ class ESPhomeBluetoothProxy:
     def _merge(self, address: str, address_type: int, rssi: int, data: bytes) -> tuple[BLEDevice, AdvertisementData]:
         # packets and scan responses arrive apart; merged like BlueZ does, so they don't read as changes
         name, uuids, service_data, manufacturer_data, tx_power = parse_advertisement_data_bytes(data)
-        if previous := self._heard.get(address):
+        if previous := self._heard.pop(address, None):  # re-added last: the dict stays oldest first
             before = previous[0]
             name = name or before.local_name
             uuids = sorted({*before.service_uuids, *uuids})
@@ -59,6 +60,8 @@ class ESPhomeBluetoothProxy:
             manufacturer_data = before.manufacturer_data | manufacturer_data
         adv = AdvertisementData(name, dict(manufacturer_data), dict(service_data), list(uuids), tx_power, rssi, ())
         self._heard[address] = adv, address_type
+        if len(self._heard) > _REMEMBERED:
+            del self._heard[next(iter(self._heard))]
         return BLEDevice(address, name, {"source": self.name}), adv
 
     async def stop(self):

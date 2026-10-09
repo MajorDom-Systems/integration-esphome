@@ -141,3 +141,14 @@ async def test_a_refused_connection_is_an_error(proxied):
     client.answers = (False, 0, 133)
     with pytest.raises(ConnectionError, match="error 133"):
         await ble.connect("AA:BB:CC:DD:EE:FF")
+
+
+async def test_rotating_addresses_dont_grow_the_memory(proxied, monkeypatch):
+    ble, client = proxied
+    monkeypatch.setattr("majordom_esphome.bluetooth._REMEMBERED", 2)
+    proxy = ble._sources["esphome:11:22:33:44:55:66"]
+    for address in range(3):
+        response = BluetoothLERawAdvertisementsResponse()
+        response.advertisements.add(address=address, rssi=-60, address_type=1, data=MATTER_ADV)
+        client.on_advertisements(response)
+    assert list(proxy._heard) == ["00:00:00:00:00:01", "00:00:00:00:00:02"]
