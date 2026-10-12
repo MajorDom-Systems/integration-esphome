@@ -54,6 +54,10 @@ binaries are built on first use and need the ESPHome CLI:
 pipx install esphome && poetry run python -m tests.virtual.build
 ```
 
+Host nodes have no BLE, so the Improv tests run the real client against a scripted Improv GATT service. The
+end-to-end run on real hardware (an ESP32-C3 in the lab cage, a Wi-Fi AP, BLE on the Hub) is
+`tests/hardware/run_hardware.sh`, with the sketch next to it; it is skipped everywhere else.
+
 ## Run it standalone (without the Hub)
 
 `majordom-esphome` is a standalone library — import it into your own app, or run **just this
@@ -72,7 +76,8 @@ Noise encryption. Devices must have the `api:` component enabled in their YAML; 
 ## About this integration
 
 - **Protocol / platform:** ESPHome native API (`aioesphomeapi`).
-- **Transport(s):** TCP/IP (Wi-Fi, Ethernet); devices are found via mDNS (`_esphomelib._tcp`).
+- **Transport(s):** TCP/IP (Wi-Fi, Ethernet); devices are found via mDNS (`_esphomelib._tcp`). Nodes without
+Wi-Fi yet are found over BLE (Improv) and set up onto the Hub's Wi-Fi (see below).
 - **Supported entities:** light (on/off, brightness, RGB), switch, sensor, binary sensor, text
 sensor, number, select, button, cover (position), fan (on/off), climate (mode, targets).
 Every other entity the library knows (lock, valve, text, alarm panel, update, ...) is mapped generically from
@@ -85,6 +90,13 @@ key of the integration's own at pairing: generated, stored on the device record,
 not announce `api_provisioning=zero-psk`). From then on the node accepts only that key, so the user never types one;
 the key is stored before it is set, so a failed attempt (or a Hub restart in between) does not lock the Hub out. A node
 without `encryption:` still pairs in plaintext, with a warning in the log to turn encryption on.
+- **Wi-Fi setup over BLE (Improv):** a node built with `esp32_improv` (`improv_ble` from ESPHome 2026.11) and no Wi-Fi
+networks advertises the Improv service; it is offered as a `ble` discovery named (and identified) by its node name.
+Pairing it gives it the Hub's Wi-Fi with [`py-improv-ble-client`](https://github.com/home-assistant-libs/py-improv-ble-client)
+(asking the user to press its button when it has an `authorizer`), waits for it to announce itself over mDNS (matched
+by the name it advertised, which ESPHome cuts to 20 characters), then pairs it like any other node, keyless key
+included. The Hub's device takes the node's own identity (`pair_device` returns it). The Wi-Fi comes from the Hub's
+`wifi_credentials` dependency (SDK `feature/wifi-credentials`); a Hub without one cannot set nodes up over BLE.
 
 ### Required harness
 
@@ -118,7 +130,7 @@ closure is called in `stop`
 - [x] Discovery listener methods fire when nodes appear, change and leave, and the controller calls
 the matching `self.dependencies.output.controller_did_*_discovery`
 - [x] Paired devices reconnect when the Hub restarts (`controller_did_connect_device` is called)
-- [x] `start_pairing_window`: not needed, mDNS discovery is always on (SDK default is a no-op)
+- [x] `start_pairing_window`: not needed, mDNS and BLE discovery are always on (SDK default is a no-op)
 - [x] Device pairing, including the encryption key (`CredentialsType.secret`), and a generated key for keyless nodes
 - [x] Device schema is mapped from the entities the device reports: parameters, units, limits and
 valid values
