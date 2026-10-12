@@ -6,6 +6,7 @@ async, typed helper that can be killed and restarted mid-test. It never touches 
 
 import asyncio
 import contextlib
+import os
 import shutil
 import signal
 import socket
@@ -38,7 +39,8 @@ ENCRYPTION_KEY = "kiO8WgmbyiIdaQ9fAFcZCdFTzRj6dzmfG/Pu3pbU9JI="  # `api.encrypti
 PLAIN = Sketch("virtual.yaml", "test_node", 6053, "983569abf679")
 ENCRYPTED = Sketch("encrypted.yaml", "test_node_enc", 6054, "983569abf679", ENCRYPTION_KEY)
 EXTRAS = Sketch("extras.yaml", "test_node_extras", 6055, "983569abf680")  # entities without a hand-written mapping
-SKETCHES = (PLAIN, ENCRYPTED, EXTRAS)
+KEYLESS = Sketch("keyless.yaml", "test_node_keyless", 6056, "983569abf679")  # encryption on, key set at pairing
+SKETCHES = (PLAIN, ENCRYPTED, EXTRAS, KEYLESS)
 
 
 def build(sketch: Sketch) -> None:
@@ -79,8 +81,10 @@ class VirtualDevice:
             )
         line_buffered = shutil.which("stdbuf") or shutil.which("gstdbuf")  # piped stdout is block-buffered otherwise
         cmd = [line_buffered, "-oL", str(self.sketch.binary)] if line_buffered else [str(self.sketch.binary)]
+        # the node's flash (a provisioned key) lives in its own workdir: kept across restarts, never across tests
+        env = {**os.environ, "ESPHOME_PREFDIR": str(self._workdir)}
         self._proc = subprocess.Popen(
-            cmd, cwd=self._workdir, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1
+            cmd, cwd=self._workdir, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1
         )
         self._reader = threading.Thread(target=self._read_output, args=(self._proc,), daemon=True)
         self._reader.start()
