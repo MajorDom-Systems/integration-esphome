@@ -2,7 +2,8 @@
 
 import asyncio
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, fields
 from typing import Any
 from uuid import UUID
 
@@ -15,6 +16,26 @@ from majordom_integration_sdk.testing import RecordingControllerOutput
 from majordom_esphome.models import ESPhomeDevice, ESPhomeDeviceIntegrationData, ESPhomeParameter
 
 ROOM = UUID(int=42)
+
+
+@dataclass
+class WiFi:
+    ssid: str
+    password: str
+
+
+@dataclass(frozen=True)
+class HubDependencies(AbstractController.Dependencies):
+    """The SDK's dependencies plus the Hub's Wi-Fi (SDK branch feature/wifi-credentials, not released yet)."""
+
+    wifi_credentials: Callable[[], Awaitable[WiFi | None]] | None = None
+
+
+def with_wifi(
+    deps: AbstractController.Dependencies, wifi_credentials: Callable[[], Awaitable[WiFi | None]]
+) -> HubDependencies:
+    sdk = {f.name: getattr(deps, f.name) for f in fields(deps)}
+    return HubDependencies(**sdk, wifi_credentials=wifi_credentials)
 
 
 async def hub_creates_device(
