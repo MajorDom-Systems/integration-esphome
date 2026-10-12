@@ -175,7 +175,7 @@ defaults:
 
 Brightness, positions and saturation are percentages (0–100, ESPHome reports 0–1); colour is hue in degrees
 plus saturation, the model the Matter and Zigbee integrations use, converted from ESPHome's RGB. Enums are
-integers with string labels in `valid_values`, labelled by the ESPHome enum names. Units come from the
+integers with string labels in `valid_values`, labelled by the ESPHome enum names. A command may give an enum value as its key or its label (the option or member name). Units come from the
 entity's own unit string, else from its device class. Entities in the
 `config` / `diagnostic` category are `setting`, and entities disabled by default are `system`.
 
