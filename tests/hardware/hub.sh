@@ -2,6 +2,7 @@
 # The Hub side of run_hardware.sh, on the CM4 (started by it, not by hand), from the checkout it ships to
 # <dir>/integration-esphome next to <dir>/integration-sdk; the venv is <dir>/venv.
 #   hub.sh prepare: creates the venv with HUB_PYTHON (3.12+) if missing, then installs both checkouts and pytest into it
+#     (offline from the wheels in WHEELHOUSE when it is set: a directory, relative to <dir> unless absolute)
 #   hub.sh test [pytest args]: routes AP_SUBNET via ROUTER_LINK_IP and runs the test against this host's BLE adapter.
 #     stdin: line 1 is the hotspot password; EOF after it (the run was interrupted or lost its ssh session) stops the test.
 # The route is removed on exit. Settings come from run_hardware.sh's environment (no defaults here).
@@ -19,7 +20,14 @@ if [ "${1:-}" = prepare ]; then
         exit 1
     }
     [ -x "$VENV/bin/python" ] || "$HUB_PYTHON" -m venv "$VENV"
-    "$VENV/bin/python" -m pip install -q -e "$ROOT/integration-sdk" -e "$SRC" pytest pytest-asyncio pytest-timeout
+    # A Hub without PyPI (the CM4) installs from the wheelhouse run_hardware.sh ships, poetry-core included
+    set -- -q -e "$ROOT/integration-sdk" -e "$SRC" pytest pytest-asyncio pytest-timeout
+    case ${WHEELHOUSE:-} in
+        '') ;;
+        /*) set -- --no-index --find-links "$WHEELHOUSE" "$@" ;;
+        *) set -- --no-index --find-links "$ROOT/$WHEELHOUSE" "$@" ;;
+    esac
+    "$VENV/bin/python" -m pip install "$@"
     exit
 fi
 [ "${1:-}" = test ] || { echo "Usage: $0 prepare | test [pytest args]" >&2; exit 2; }

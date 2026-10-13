@@ -27,6 +27,10 @@
 #   ROUTER_LINK_IP (10.99.0.1), ESPHOME_DUT_SERIAL (the C3's /dev/serial/by-id path on lab-pi5), AUTHORIZER=1 when the
 #   DUT was built with `-s authorizer boot_button` (press BOOT when asked), and the test's ESPHOME_BLE_ADAPTER (hci0,
 #   on the CM4), ESPHOME_DISCOVERY_TIMEOUT, ESPHOME_TEST_TIMEOUT.
+#   WHEELHOUSE: a local directory of wheels for a Hub without PyPI (the CM4), shipped to it and installed with
+#   `pip --no-index`. Build it on a host with PyPI and the Hub's platform (lab-pi5 for the CM4: aarch64, Python 3.13),
+#   in a venv, from both checkouts: `pip wheel -w <dir> <sdk> <esphome> pytest pytest-asyncio pytest-timeout
+#   poetry-core` (the editable installs build with poetry-core), then drop its majordom_* wheels.
 # A DUT left provisioned by an aborted run: reflash it (`esptool erase-flash`, then write the factory image).
 set -eu
 
@@ -70,14 +74,21 @@ ship() {  # <checkout> <name>: its files, as in the working tree, to $HUB_DIR/<n
     git -C "$1" ls-files -z --cached --others --exclude-standard |
         COPYFILE_DISABLE=1 tar -C "$1" --no-xattrs --null -T - -cf - |
         on_hub "rm -rf $(q "$HUB_DIR/$2") && mkdir -p $(q "$HUB_DIR/$2") && \
-            tar -xf - --warning=no-unknown-keyword -C $(q "$HUB_DIR/$2")"
+            tar -xmf - --warning=no-unknown-keyword -C $(q "$HUB_DIR/$2")"
 }
 
 # 1. The Hub's code and venv (nothing on the rig is touched yet)
 [ -f "$SDK_SRC/majordom_integration_sdk/__init__.py" ] || { echo "No SDK checkout at $SDK_SRC: set SDK_SRC" >&2; exit 1; }
 ship "$REPO" integration-esphome
 ship "$SDK_SRC" integration-sdk
-on_hub "HUB_PYTHON=$(q "$HUB_PYTHON") sh $(q "$HUB_DIR/integration-esphome/tests/hardware/hub.sh") prepare"
+PREPARE_ENV="HUB_PYTHON=$(q "$HUB_PYTHON")"
+if [ -n "${WHEELHOUSE:-}" ]; then
+    COPYFILE_DISABLE=1 tar -C "$WHEELHOUSE" --no-xattrs -cf - . |
+        on_hub "rm -rf $(q "$HUB_DIR/wheelhouse") && mkdir -p $(q "$HUB_DIR/wheelhouse") && \
+            tar -xmf - --warning=no-unknown-keyword -C $(q "$HUB_DIR/wheelhouse")"
+    PREPARE_ENV="$PREPARE_ENV WHEELHOUSE=wheelhouse"
+fi
+on_hub "env $PREPARE_ENV sh $(q "$HUB_DIR/integration-esphome/tests/hardware/hub.sh") prepare"
 
 # 2. The router side: the cage and the hotspot, up until fd 3 closes
 ROUTER_ENV="AP_IFACE=$(q "$AP_IFACE") AP_SSID=$(q "$AP_SSID") AP_CHANNEL=$(q "$AP_CHANNEL") \
