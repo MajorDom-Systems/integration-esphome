@@ -75,8 +75,15 @@ sleep 3
 if sudo ss -Hlnu 'sport = :53' | awk '{print $4}' | grep -qv '^127\.0\.0\.5[34][%:]'; then
     echo port=0 | sudo tee $NODNS >/dev/null
 fi
-sudo nmcli dev wifi hotspot ifname "$AP_IFACE" con-name $AP_CON ssid "$AP_SSID" password "$AP_PASSWORD" band bg \
-    channel "$AP_CHANNEL" >/dev/null
+# `nmcli dev wifi hotspot` only takes the password as an argument, visible in `ps`: the same AP is built by hand, with
+# the PSK never saved (psk-flags 2) and handed to the activation by a root-only passwd-file in STATE (rm -rf on exit)
+sudo nmcli connection add type wifi ifname "$AP_IFACE" con-name $AP_CON autoconnect no ssid "$AP_SSID" \
+    802-11-wireless.mode ap 802-11-wireless.band bg 802-11-wireless.channel "$AP_CHANNEL" \
+    wifi-sec.key-mgmt wpa-psk wifi-sec.proto rsn wifi-sec.pairwise ccmp wifi-sec.group ccmp wifi-sec.psk-flags 2 \
+    ipv4.method shared ipv6.method ignore >/dev/null
+printf '802-11-wireless-security.psk:%s\n' "$AP_PASSWORD" | sudo sh -c "umask 077 && cat >$STATE/psk"
+sudo nmcli connection up $AP_CON passwd-file $STATE/psk >/dev/null
+sudo rm -f $STATE/psk
 sudo nft insert rule ip "nm-shared-$AP_IFACE" filter_forward ip saddr "$HUB_SUBNET" oifname "$AP_IFACE" accept
 # Docker's FORWARD policy is drop: let the cable and the hotspot through it
 if sudo iptables -n -L DOCKER-USER >/dev/null 2>&1; then
