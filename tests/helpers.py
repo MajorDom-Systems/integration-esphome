@@ -34,7 +34,7 @@ class HubDependencies(AbstractController.Dependencies):
 def with_wifi(
     deps: AbstractController.Dependencies, wifi_credentials: Callable[[], Awaitable[WiFi | None]]
 ) -> HubDependencies:
-    sdk = {f.name: getattr(deps, f.name) for f in fields(deps)}
+    sdk = {f.name: getattr(deps, f.name) for f in fields(deps) if f.name != "wifi_credentials"}  # SDKs that have it
     return HubDependencies(**sdk, wifi_credentials=wifi_credentials)
 
 
