@@ -56,7 +56,8 @@ pipx install esphome && poetry run python -m tests.virtual.build
 
 Host nodes have no BLE, so the Improv tests run the real client against a scripted Improv GATT service. The
 end-to-end run on real hardware (an ESP32-C3 in the lab cage, a Wi-Fi AP, BLE on the Hub) is
-`tests/hardware/run_hardware.sh`, with the sketch next to it; it is skipped everywhere else.
+`tests/hardware/run_hardware.sh`, with the sketch next to it; it carries the Hub's `hardware_iot_device` marker
+and is deselected everywhere else.
 
 ## Run it standalone (without the Hub)
 

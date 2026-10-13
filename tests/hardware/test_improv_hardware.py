@@ -1,16 +1,22 @@
 """Real hardware, end to end: an ESP32-C3 flashed with `esp32c3_improv.yaml` (no Wi-Fi, no API key) is found over BLE,
 given the AP's Wi-Fi over Improv, found again over mDNS, given an API key over the zero PSK, and controlled.
 
-Runs on the lab rig only, through `run_hardware.sh` (it brings the AP up and sets the variables); skipped elsewhere.
+Runs on the lab rig only, through `run_hardware.sh` (it brings the AP up, sets the Wi-Fi variables and passes
+`--include-hardware-iot`); deselected elsewhere, like the Hub's hardware tests. Endpoints come from the environment:
+ESPHOME_WIFI_SSID and ESPHOME_WIFI_PASSWORD (required: the AP the node joins), ESPHOME_BLE_ADAPTER (hci0),
+ESPHOME_DISCOVERY_TIMEOUT (120 s for the node to advertise) and ESPHOME_TEST_TIMEOUT (300 s for the whole test).
 """
 
 import asyncio
+import functools
 import os
 from collections.abc import AsyncIterator
+from unittest.mock import patch
 
 import pytest
 import pytest_asyncio
 from aioesphomeapi import ZERO_NOISE_PSK, APIClient, APIConnectionError
+from bleak import BleakScanner
 from majordom_integration_sdk.discovery.ble_discovery import BLEDiscoveryService
 from majordom_integration_sdk.discovery.zeroconf_discovery import ZeroconfDiscoveryService
 from majordom_integration_sdk.schemas.command import DeviceCommand
@@ -22,22 +28,28 @@ from majordom_esphome.models import ESPhomeDevice
 from tests.helpers import WiFi, hub_creates_device, param, wait_for_value, wait_until, with_wifi
 
 NODE = "md-hw-improv"  # `esphome.name` of the sketch
+BLE_ADAPTER = os.environ.get("ESPHOME_BLE_ADAPTER", "hci0")
+DISCOVERY_TIMEOUT = float(os.environ.get("ESPHOME_DISCOVERY_TIMEOUT", "120"))
 
-pytestmark = [
-    pytest.mark.skipif("ESPHOME_HW_SSID" not in os.environ, reason="lab rig only: run tests/hardware/run_hardware.sh"),
-    pytest.mark.timeout(300),
-]
+pytestmark = [pytest.mark.hardware_iot_device, pytest.mark.timeout(int(os.environ.get("ESPHOME_TEST_TIMEOUT", "300")))]
 
 
 @pytest_asyncio.fixture
 async def hub() -> AsyncIterator[ESPhomeController]:
     """The integration as the Hub runs it: real BLE and mDNS discovery, and the Hub's Wi-Fi."""
+    ssid, password = os.environ.get("ESPHOME_WIFI_SSID"), os.environ.get("ESPHOME_WIFI_PASSWORD")
+    assert ssid and password, "set ESPHOME_WIFI_SSID and ESPHOME_WIFI_PASSWORD (run_hardware.sh does)"
     zeroconf, ble = ZeroconfDiscoveryService(), BLEDiscoveryService()
     await zeroconf.start()
-    await ble.start()
+    # The SDK scans on BlueZ's default adapter; a scanned device keeps its adapter, so pairing connects through it too
+    with patch(
+        f"{BLEDiscoveryService.__module__}.BleakScanner",
+        functools.partial(BleakScanner, bluez={"adapter": BLE_ADAPTER}),
+    ):
+        await ble.start()
 
     async def wifi_credentials() -> WiFi:
-        return WiFi(os.environ["ESPHOME_HW_SSID"], os.environ["ESPHOME_HW_PASSWORD"])
+        return WiFi(ssid, password)
 
     sdk = build_test_dependencies().copy(zeroconf_discovery_service=zeroconf, ble_discovery_service=ble)
     controller = ESPhomeController(with_wifi(sdk, wifi_credentials))
@@ -67,7 +79,7 @@ async def test_an_unprovisioned_node_is_set_up_over_ble_and_paired_with_a_key_of
     def advertised() -> Discovery | None:
         return next((d for d in hub.discoveries.values() if d.transport == "ble" and d.device_name == NODE), None)
 
-    await wait_until(lambda: advertised() is not None, 120, f"{NODE} to advertise Improv")
+    await wait_until(lambda: advertised() is not None, DISCOVERY_TIMEOUT, f"{NODE} to advertise Improv")
     discovery = advertised()
     assert discovery is not None
     await hub_creates_device(hub.dependencies, discovery)
