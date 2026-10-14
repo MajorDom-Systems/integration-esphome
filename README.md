@@ -99,16 +99,10 @@ by the name it advertised, which ESPHome cuts to 20 characters), then pairs it l
 included. The Hub's device takes the node's own identity (`pair_device` returns it). The Wi-Fi comes from the Hub's
 `wifi_credentials` dependency (SDK `feature/wifi-credentials`); a Hub without one cannot set nodes up over BLE.
 
-### Needs
+### Required harness
 
-| Capability | Required | Provided by |
-|------------|----------|-------------|
-| `thread/otbr-rest` | no | a Thread border router: the hub's `otbr` or `multiprotocol` service on a Thread-capable stick. Only devices on Thread need it; Wi-Fi and Ethernet devices need nothing |
-
-- **Services it brings:** none — the integration speaks directly to ESPHome devices.
-- **Settings:** *Bluetooth proxies*, on by default: ESPHome devices with `bluetooth_proxy` lend their Bluetooth
-radio to the hub while they are connected. A device serves one hub at a time: turn it off only if another hub
-needs a device's Bluetooth proxy.
+- **Hardware adapters:** none — ESPHome devices are self-contained and connect over the network.
+- **Third-party software services:** none — the integration speaks directly to ESPHome devices.
 - **OS / permissions:** network access to the ESPHome devices (same LAN or routable subnet);
 mDNS/SSDP may be required for discovery depending on configuration.
 
