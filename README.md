@@ -84,7 +84,9 @@ sensor, number, select, button, cover (position), fan (on/off), climate (mode, t
 Every other entity the library knows (lock, valve, text, alarm panel, update, ...) is mapped generically from
 the library's own types (see below); cameras and events are skipped.
 - **Credentials needed to pair:** the API encryption key (type `secret`) if the node has one
-configured in its YAML; otherwise none.
+configured in its YAML; otherwise none. When the Hub still holds a key it gave the node earlier (the device was unpaired
+but its record kept), the discovery offers both `none` (pair with the kept key) and `secret`: the node may have been
+reflashed with a key of its own since, and the kept key is then rejected.
 - **Encryption keys:** a node with `api: encryption:` but no `key:` (it announces `api_encryption_supported`) is given a
 key of the integration's own at pairing: generated, stored on the device record, then set with
 `noise_encryption_set_key` over a Noise session with the well-known all-zeros PSK (in plaintext on firmware that does
@@ -97,7 +99,12 @@ Pairing it gives it the Hub's Wi-Fi with [`py-improv-ble-client`](https://github
 (asking the user to press its button when it has an `authorizer`), waits for it to announce itself over mDNS (matched
 by the name it advertised, which ESPHome cuts to 20 characters), then pairs it like any other node, keyless key
 included. The Hub's device takes the node's own identity (`pair_device` returns it). The Wi-Fi comes from the Hub's
-`wifi_credentials` dependency (SDK `feature/wifi-credentials`); a Hub without one cannot set nodes up over BLE.
+`wifi_credentials` dependency (SDK `feature/wifi-credentials`).
+- **No Wi-Fi on the Hub (e.g. on Ethernet):** when `wifi_credentials()` returns `None` (or the Hub's SDK has no such
+dependency), `pair_device` of a `ble` discovery raises `NoWiFiCredentialsError` (a `LookupError`, exported by the
+package) before any BLE step, and sets the discovery's `last_error` to `NO_WIFI_CREDENTIALS` (it starts with
+`No Wi-Fi credentials found`). The app tells it from other failures by that text, asks the user for the Wi-Fi network
+the node should join, has the Hub save it (its `set_wifi` endpoint: saved, not connected to), then pairs again.
 
 ### Required harness
 
