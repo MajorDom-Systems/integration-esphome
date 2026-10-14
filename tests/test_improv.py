@@ -6,6 +6,7 @@ mDNS.
 """
 
 import asyncio
+import dataclasses
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from types import SimpleNamespace
@@ -33,7 +34,7 @@ from majordom_integration_sdk.testing import RecordingControllerOutput
 
 from majordom_esphome import controller as controller_module
 from majordom_esphome import improv
-from majordom_esphome.controller import ESPhomeController
+from majordom_esphome.controller import NO_WIFI_CREDENTIALS, ESPhomeController, NoWiFiCredentialsError
 from majordom_esphome.models import ESPhomeDevice
 from tests.helpers import (
     HubDependencies,
@@ -398,13 +399,42 @@ async def test_a_hub_without_wifi_cannot_set_up_the_node(
     output: RecordingControllerOutput,
     hub_wifi: list[WiFi | None],
 ):
+    """A Hub on Ethernet: told apart from any other failure, before the node is touched, so the app can ask for the
+    Wi-Fi the node should join (the Hub saves it for the next attempt)."""
     hub_wifi[0] = None
+    node.reachable = False  # any BLE step would fail with another error
 
-    with pytest.raises(ValueError):
+    with pytest.raises(NoWiFiCredentialsError):
         await controller.pair_device(ble_discovery, credentials=None)
 
     assert node.received == []
-    assert "wi-fi" in (await last_error(output, ble_discovery)).lower()
+    assert await last_error(output, ble_discovery) == NO_WIFI_CREDENTIALS
+    await assert_not_paired(controller.dependencies, ble_discovery.id)
+
+
+async def test_a_hub_whose_sdk_has_no_wifi_credentials_cannot_set_up_the_node_either(
+    deps: HubDependencies, node: FakeImprovNode, output: RecordingControllerOutput
+):
+    controller = ESPhomeController(dataclasses.replace(deps, wifi_credentials=None))
+    await controller.start()
+    try:
+        await advertise(controller, node.info())
+        (found,) = controller.discoveries.values()
+        await hub_creates_device(controller.dependencies, found)
+
+        with pytest.raises(NoWiFiCredentialsError):
+            await controller.pair_device(found, credentials=None)
+
+        assert node.received == []
+        assert await last_error(output, found) == NO_WIFI_CREDENTIALS
+    finally:
+        await controller.stop()
+
+
+def test_no_wifi_credentials_is_a_lookup_error_the_hub_already_handles():
+    assert issubclass(NoWiFiCredentialsError, LookupError)
+    assert str(NoWiFiCredentialsError()) == NO_WIFI_CREDENTIALS
+    assert NO_WIFI_CREDENTIALS.startswith("No Wi-Fi credentials found")
 
 
 async def test_the_reason_stays_on_the_discovery_while_the_node_keeps_advertising(
