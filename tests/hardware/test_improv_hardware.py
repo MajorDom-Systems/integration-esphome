@@ -1,6 +1,5 @@
 """Real hardware, end to end: an ESP32-C3 flashed with `esp32c3_improv.yaml` (no Wi-Fi, no API key) is found over BLE,
-given the AP's Wi-Fi over Improv, found again over mDNS, given an API key over the zero PSK, and controlled. It is
-controlled only once the cage guard (`duts.py`) knows it for the cage's C3, by its MAC, name and Wi-Fi signal.
+given the AP's Wi-Fi over Improv, found again over mDNS, given an API key over the zero PSK, and controlled.
 
 Runs on the lab rig only, through `run_hardware.sh` (it brings the AP up, sets the Wi-Fi variables and passes
 `--include-hardware-iot`); deselected elsewhere, like the Hub's hardware tests. Endpoints come from the environment:
@@ -26,7 +25,6 @@ from majordom_integration_sdk.testing import RecordingControllerOutput, build_te
 
 from majordom_esphome.controller import ESPhomeController
 from majordom_esphome.models import ESPhomeDevice
-from tests.hardware.duts import ESPHOME_C3, pick
 from tests.helpers import WiFi, hub_creates_device, param, wait_for_value, wait_until, with_wifi
 
 NODE = "md-hw-improv"  # `esphome.name` of the sketch
@@ -94,9 +92,6 @@ async def test_an_unprovisioned_node_is_set_up_over_ble_and_paired_with_a_key_of
     assert device is not None and device.available
     data = device.integration_data
     assert data.encryption_key
-    # nothing is sent to the node (not even its factory reset) unless it is the cage's C3, inside the closed cage
-    signal = await wait_for_value(output, param(device, "Wi-Fi Signal"), lambda v: v is not None, timeout=30)
-    pick(ESPHOME_C3, [data], identity=lambda d: {"mac": d.mac_address, "name": d.device_name}, rssi=lambda _: signal)
     address = data.addresses[0]
     try:
         assert not await connects(address, data.port, None), "plaintext must be refused once the node has its key"

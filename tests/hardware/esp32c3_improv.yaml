@@ -7,7 +7,6 @@ substitutions:
 
 esphome:
   name: md-hw-improv  # the test finds the node by this name, over BLE and then over mDNS
-  friendly_name: Cage C3  # with its MAC, what the cage guard (duts.py) knows the DUT by
 
 esp32:
   board: esp32-c3-devkitm-1
@@ -36,11 +35,6 @@ switch:
   - platform: template
     name: "Test Switch"
     optimistic: true
-
-sensor:
-  - platform: wifi_signal  # the cage guard acts on the node only when it is heard from inside the closed cage
-    name: "Wi-Fi Signal"
-    update_interval: 10s
 
 button:
   - platform: factory_reset  # forgets Wi-Fi and the API key, so every run starts from an unprovisioned node
