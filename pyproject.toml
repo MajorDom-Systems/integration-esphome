@@ -3,7 +3,9 @@ name = "majordom-esphome"
 version = "0.1.2"
 description = "ESPHome integration for MajorDom — bridges ESPHome devices into the MajorDom language."
 authors = [
-    { name = "Mark Parker", email = "mark@parker-programs.com" }
+    { name = "Parker Industries" },
+    { name = "Artem Novosolov @Artem333333", email = "82451512+Artem333333@users.noreply.github.com" },
+    { name = "Mark Parker @MarkParker5", email = "34688010+MarkParker5@users.noreply.github.com" },
 ]
 readme = "README.md"
 license = "LicenseRef-PolyForm-Noncommercial-1.0.0"
@@ -39,6 +41,7 @@ noiseprotocol = { version = ">=0.3.1,<1.0", python = ">=3.12" }
 Homepage = "https://majordom.io"
 Documentation = "https://docs.majordom.io/device-integration"
 Repository = "https://github.com/MajorDom-Systems/integration-esphome"
+"Parker Industries" = "https://parker-industries.org"
 
 [dependency-groups]
 dev = [
