@@ -106,7 +106,9 @@ included. The Hub's device takes the node's own identity (`pair_device` returns 
 | `thread/otbr-rest` | no | a Thread border router: the hub's `otbr` or `multiprotocol` service on a Thread-capable stick. Only devices on Thread need it; Wi-Fi and Ethernet devices need nothing |
 
 - **Services it brings:** none — the integration speaks directly to ESPHome devices.
-- **Settings:** none.
+- **Settings:** *Bluetooth proxies*, on by default: ESPHome devices with `bluetooth_proxy` lend their Bluetooth
+radio to the hub while they are connected. A device serves one hub at a time: turn it off only if another hub
+needs a device's Bluetooth proxy.
 - **OS / permissions:** network access to the ESPHome devices (same LAN or routable subnet);
 mDNS/SSDP may be required for discovery depending on configuration.
 

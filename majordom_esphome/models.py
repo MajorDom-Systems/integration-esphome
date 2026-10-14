@@ -38,8 +38,8 @@ class ESPhomeSettings(BaseModel):
     bluetooth_proxies: bool = Field(
         True,
         title="Bluetooth proxies",
-        description="Reach Bluetooth devices through ESPHome devices with bluetooth_proxy. A proxy serves one hub "
-        "at a time: turn this off while Home Assistant uses them.",
+        description="Reach Bluetooth devices through ESPHome devices with bluetooth_proxy. A device serves one hub "
+        "at a time: turn this off only if another hub needs its Bluetooth proxy.",
     )
 
 
