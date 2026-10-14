@@ -1,4 +1,4 @@
-"""ESPHome Bluetooth proxies as sources of the hub's BLEService."""
+"""ESPHome nodes lending their Bluetooth as sources of the hub's BLEService."""
 
 import asyncio
 from uuid import UUID
@@ -14,7 +14,7 @@ from aioesphomeapi.model import (
 )
 from majordom_integration_sdk.discovery import BLEService
 
-from majordom_esphome.bluetooth import ESPhomeBluetoothProxy
+from majordom_esphome.bluetooth import ESPhomeBLESource
 
 PROXY = (
     BluetoothProxyFeature.PASSIVE_SCAN
@@ -89,22 +89,22 @@ class Listener:
 
 
 @pytest.fixture
-async def proxied():
+async def ble_and_node():
     client = FakeAPIClient()
     ble = BLEService(sources=[])
     await ble.start()
-    await ble.add_source(await ESPhomeBluetoothProxy.of(client))
+    await ble.add_source(await ESPhomeBLESource.of(client))
     yield ble, client
     await ble.stop()
 
 
-async def test_only_devices_streaming_raw_advertisements_are_proxies():
-    assert await ESPhomeBluetoothProxy.of(FakeAPIClient(features=0)) is None
-    assert (await ESPhomeBluetoothProxy.of(FakeAPIClient())).name == "esphome:11:22:33:44:55:66"
+async def test_only_nodes_streaming_raw_advertisements_are_sources():
+    assert await ESPhomeBLESource.of(FakeAPIClient(features=0)) is None
+    assert (await ESPhomeBLESource.of(FakeAPIClient())).name == "esphome:11:22:33:44:55:66"
 
 
-async def test_advertisements_and_scan_responses_merge_into_one_device(proxied):
-    ble, client = proxied
+async def test_advertisements_and_scan_responses_merge_into_one_device(ble_and_node):
+    ble, client = ble_and_node
     listener = Listener()
     ble.register(listener, {UUID(MATTER)})
 
@@ -119,8 +119,8 @@ async def test_advertisements_and_scan_responses_merge_into_one_device(proxied):
     assert second.advertisement.service_data == {MATTER: bytes.fromhex("00000fa1f7ff0180")}
 
 
-async def test_connects_and_speaks_gatt_by_handle(proxied):
-    ble, client = proxied
+async def test_connects_and_speaks_gatt_by_handle(ble_and_node):
+    ble, client = ble_and_node
     client.advertise(MATTER_ADV)
     await asyncio.sleep(0.01)
 
@@ -136,19 +136,19 @@ async def test_connects_and_speaks_gatt_by_handle(proxied):
     assert client.writes == [(3, b"hs")] and client.descriptors == [(6, b"\x02\x00")] and notes == [b"ok"]
 
 
-async def test_a_refused_connection_is_an_error(proxied):
-    ble, client = proxied
+async def test_a_refused_connection_is_an_error(ble_and_node):
+    ble, client = ble_and_node
     client.answers = (False, 0, 133)
     with pytest.raises(ConnectionError, match="error 133"):
         await ble.connect("AA:BB:CC:DD:EE:FF")
 
 
-async def test_rotating_addresses_dont_grow_the_memory(proxied, monkeypatch):
-    ble, client = proxied
+async def test_rotating_addresses_dont_grow_the_memory(ble_and_node, monkeypatch):
+    ble, client = ble_and_node
     monkeypatch.setattr("majordom_esphome.bluetooth._REMEMBERED", 2)
-    proxy = ble._sources["esphome:11:22:33:44:55:66"]
+    source = ble._sources["esphome:11:22:33:44:55:66"]
     for address in range(3):
         response = BluetoothLERawAdvertisementsResponse()
         response.advertisements.add(address=address, rssi=-60, address_type=1, data=MATTER_ADV)
         client.on_advertisements(response)
-    assert list(proxy._heard) == ["00:00:00:00:00:01", "00:00:00:00:00:02"]
+    assert list(source._heard) == ["00:00:00:00:00:01", "00:00:00:00:00:02"]

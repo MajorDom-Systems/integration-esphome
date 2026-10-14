@@ -1,8 +1,8 @@
-"""ESPHome devices with ``bluetooth_proxy`` as Bluetooth sources: the hub hears and reaches BLE devices
+"""ESPHome nodes with ``bluetooth_proxy`` as Bluetooth sources: the hub hears and reaches BLE devices
 through them as if through its own adapter.
 
-A proxy serves one API connection at a time (the newest subscriber wins), so it can't serve this hub
-and Home Assistant together.
+A node serves one API connection at a time (the newest subscriber wins), so it can't serve this hub
+and another one together.
 """
 
 import contextlib
@@ -22,7 +22,10 @@ _CONNECTS = BluetoothProxyFeature.ACTIVE_CONNECTIONS | BluetoothProxyFeature.REM
 _REMEMBERED = 1024  # devices kept merged; phones rotate their address, so the oldest are dropped
 
 
-class ESPhomeBluetoothProxy:
+class ESPhomeBLESource:
+    """An ESPHome node lends its Bluetooth radio to the hub: what it hears and the connections it makes become one
+    more source of the hub's `BLEService`."""
+
     def __init__(self, client: APIClient, name: str, features: BluetoothProxyFeature):
         self.name = f"esphome:{name}"
         self._client, self._features = client, features
@@ -31,7 +34,7 @@ class ESPhomeBluetoothProxy:
 
     @classmethod
     async def of(cls, client: APIClient) -> Self | None:
-        """The device's proxy, if it has one this hub can use."""
+        """The node's source, if it lends Bluetooth this hub can use."""
         info = await client.device_info()
         features = BluetoothProxyFeature(info.bluetooth_proxy_feature_flags_compat(client.api_version))
         if not features & BluetoothProxyFeature.RAW_ADVERTISEMENTS:  # firmware before 2023.? or no proxy
