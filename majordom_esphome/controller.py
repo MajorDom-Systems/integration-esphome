@@ -12,8 +12,6 @@ from typing import Any, Protocol
 from uuid import UUID
 
 from aioesphomeapi import ZERO_NOISE_PSK, APIClient, EntityInfo, EntityState
-from bleak.backends.device import BLEDevice
-from bleak.backends.scanner import AdvertisementData
 from majordom_integration_sdk import Need
 from majordom_integration_sdk.controller import AbstractController
 from majordom_integration_sdk.discovery.ble_discovery import BLEDiscoveryInfo, BLEDiscoveryService
@@ -65,8 +63,7 @@ class _ImprovNode:
     """An unprovisioned node, waiting for Wi-Fi over BLE."""
 
     name: str  # its node name, as far as BLE carries it
-    device: BLEDevice
-    advertisement: AdvertisementData
+    address: str
 
 
 class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
@@ -223,7 +220,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
                 return
             self._ble_names[info.device.address] = name
             device_id = self.device_uuid(f"improv:{name}")
-            self._improv_nodes[device_id] = _ImprovNode(name, info.device, info.advertisement)
+            self._improv_nodes[device_id] = _ImprovNode(name, info.device.address)
             if device_id in self._discoveries:  # adverts repeat all the time: keep the discovery (and its last error)
                 return
             discovery = Discovery(
@@ -430,8 +427,8 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
             joined = self._joining[node.name] = asyncio.get_running_loop().create_future()
             try:
                 await improv.provision(
-                    node.device,
-                    node.advertisement,
+                    self.dependencies.ble_discovery_service,
+                    node.address,
                     wifi.ssid,
                     wifi.password,
                     on_authorization_required=lambda: self._report_error(discovery.id, improv.PRESS_BUTTON),
