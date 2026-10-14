@@ -397,11 +397,11 @@ async def test_a_hub_without_wifi_cannot_set_up_the_node(
     controller: ESPhomeController,
     ble_discovery: Discovery,
     node: FakeImprovNode,
-    output: RecordingControllerOutput,
     hub_wifi: list[WiFi | None],
 ):
     """A Hub on Ethernet: told apart from any other failure, before the node is touched, so the app can ask for the
-    Wi-Fi the node should join (the Hub saves it for the next attempt)."""
+    Wi-Fi the node should join (the Hub saves it for the next attempt). The Hub returns the error to the app's pairing
+    request, so the discovery's last_error is left as it was."""
     hub_wifi[0] = None
     node.reachable = False  # any BLE step would fail with another error
 
@@ -410,12 +410,12 @@ async def test_a_hub_without_wifi_cannot_set_up_the_node(
 
     assert raised.value.type == MissingCredentialsError.WIFI
     assert node.received == []
-    assert_missing_wifi(await last_error(output, ble_discovery))
+    assert controller.discoveries[ble_discovery.id].last_error is None
     await assert_not_paired(controller.dependencies, ble_discovery.id)
 
 
 async def test_a_hub_whose_sdk_has_no_wifi_credentials_cannot_set_up_the_node_either(
-    deps: HubDependencies, node: FakeImprovNode, output: RecordingControllerOutput
+    deps: HubDependencies, node: FakeImprovNode
 ):
     controller = ESPhomeController(dataclasses.replace(deps, wifi_credentials=None))
     await controller.start()
@@ -428,16 +428,9 @@ async def test_a_hub_whose_sdk_has_no_wifi_credentials_cannot_set_up_the_node_ei
             await controller.pair_device(found, credentials=None)
 
         assert node.received == []
-        assert_missing_wifi(await last_error(output, found))
+        assert controller.discoveries[found.id].last_error is None
     finally:
         await controller.stop()
-
-
-def assert_missing_wifi(last_error: str | None) -> None:
-    """The app reads the missing credentials type back from the discovery's last_error."""
-    parsed = MissingCredentialsError.parse(last_error)
-    assert parsed is not None
-    assert parsed.type == MissingCredentialsError.WIFI
 
 
 async def test_the_reason_stays_on_the_discovery_while_the_node_keeps_advertising(
