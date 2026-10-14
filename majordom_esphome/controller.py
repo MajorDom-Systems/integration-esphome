@@ -430,6 +430,8 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
             async with self.dependencies.make_device_repository() as repo:
                 await repo.save(hub_device.model_copy(update={"id": on_network.id}), previous_id=discovery.id)
             await self._pair_over_api(on_network, credentials=None)
+        except MissingCredentialsError:
+            raise  # the Hub returns it to the app's pairing request
         except Exception as exc:
             logger.exception("Setting up %s over BLE failed", discovery.device_name)
             reason = str(exc) if isinstance(exc, ValueError | LookupError | TimeoutError | improv.SetupError) else None
