@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 from uuid import UUID
 
-from aioesphomeapi import ZERO_NOISE_PSK, EntityInfo, EntityState
+from aioesphomeapi import ZERO_NOISE_PSK, APIClient, EntityInfo, EntityState
 from bleak.backends.device import BLEDevice
 from bleak.backends.scanner import AdvertisementData
 from majordom_integration_sdk import Need
@@ -28,6 +28,7 @@ from majordom_integration_sdk.schemas.device import Discovery
 from majordom_integration_sdk.schemas.parameter import ParameterVisibility
 
 from . import improv, mapper
+from .bluetooth import ESPhomeBLESource, ble_source_of
 from .connection import ESPhomeDeviceConnection, describe_error
 from .models import (
     ESPhomeDevice,
@@ -77,6 +78,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
     def __init__(self, dependencies: AbstractController.Dependencies) -> None:
         super().__init__(dependencies)
         self._connections: dict[UUID, ESPhomeDeviceConnection] = {}
+        self._ble_sources: dict[UUID, ESPhomeBLESource] = {}  # the nodes lending their Bluetooth radio to the hub
         self._discoveries: dict[UUID, Discovery] = {}
         self._discovery_data: dict[UUID, _DiscoveryData] = {}
         self._discovery_names: dict[str, UUID] = {}  # mDNS record name -> discovery id, for goodbyes
@@ -292,7 +294,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
             on_state=self._on_state,
             on_availability=self._on_availability,
             on_addresses=self._on_addresses,
-            ble=self.dependencies.ble_discovery_service if self._settings.bluetooth_proxies else None,
+            on_client=self._on_client if self._settings.bluetooth_proxies else None,
         )
 
     def _spawn(self, coroutine: Coroutine[Any, Any, None]) -> None:
@@ -309,6 +311,15 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
             await self.dependencies.output.controller_did_connect_device(self, device_id)
         else:
             await self.dependencies.output.controller_did_lose_device(self, device_id)
+
+    async def _on_client(self, device_id: UUID, client: APIClient | None) -> None:
+        """A node connected: lend its Bluetooth radio, if it has one to lend. A node gone: take the radio back."""
+        ble = self.dependencies.ble_discovery_service
+        if source := self._ble_sources.pop(device_id, None):
+            await ble.remove_source(source.name)
+        if client is not None and (source := await ble_source_of(client)):
+            self._ble_sources[device_id] = source
+            await ble.add_source(source)
 
     async def _on_addresses(self, device_id: UUID, addresses: list[str]) -> None:
         if device_id in self._connections:  # not while pairing: the device is saved with the final order

@@ -1,10 +1,12 @@
 """ESPHome nodes lending their Bluetooth as sources of the hub's BLEService."""
 
 import asyncio
+from collections.abc import AsyncIterator
+from typing import Any
 from uuid import UUID
 
 import pytest
-from aioesphomeapi import BluetoothLERawAdvertisementsResponse, BluetoothProxyFeature, DeviceInfo
+from aioesphomeapi import APIConnectionError, BluetoothLERawAdvertisementsResponse, BluetoothProxyFeature, DeviceInfo
 from aioesphomeapi.model import (
     APIVersion,
     BluetoothGATTCharacteristic,
@@ -12,9 +14,16 @@ from aioesphomeapi.model import (
     BluetoothGATTService,
     ESPHomeBluetoothGATTServices,
 )
+from majordom_integration_sdk.controller import AbstractController
 from majordom_integration_sdk.discovery import BLEService
+from majordom_integration_sdk.schemas.device import Discovery
+from majordom_integration_sdk.testing import RecordingControllerOutput
 
-from majordom_esphome.bluetooth import ESPhomeBLESource
+from majordom_esphome.bluetooth import ble_source_of
+from majordom_esphome.controller import ESPhomeController
+from majordom_esphome.models import ESPhomeDevice, ESPhomeSettings
+from tests.helpers import hub_creates_device, leaked_tasks, wait_until
+from tests.virtual.mdns import Advert, FakeMDNS
 
 PROXY = (
     BluetoothProxyFeature.PASSIVE_SCAN
@@ -26,24 +35,58 @@ MATTER = "0000fff6-0000-1000-8000-00805f9b34fb"
 DEVICE = 0xAABBCCDDEEFF
 MATTER_ADV = bytes.fromhex("0b16f6ff00000fa1f7ff0180")  # service data: a commissionable Matter device
 NAME = bytes.fromhex("0509") + b"Bulb"  # scan response: complete local name
+NODES = {"kitchen": "11:22:33:44:55:01", "garage": "11:22:33:44:55:02"}  # node name -> its Bluetooth MAC
 
 
 class FakeAPIClient:
     api_version = APIVersion(1, 12)
 
-    def __init__(self, features: int = PROXY, answers=(True, 247, 0)):
-        self.features, self.answers = features, answers
+    def __init__(
+        self,
+        features: int = PROXY,
+        answers=(True, 247, 0),
+        mac: str = "11:22:33:44:55:66",
+        device_info_error: Exception | None = None,
+        unsubscribe_error: Exception | None = None,
+    ):
+        self.features, self.answers, self.mac = features, answers, mac
+        self.device_info_error, self.unsubscribe_error = device_info_error, unsubscribe_error
         self.on_advertisements = None
+        self.on_stop = None
+        self.disconnected = False
         self.writes: list[tuple[int, bytes]] = []
         self.descriptors: list[tuple[int, bytes]] = []
         self.on_notify = None
 
     async def device_info(self):
-        return DeviceInfo(mac_address="11:22:33:44:55:66", bluetooth_proxy_feature_flags=self.features)
+        if self.device_info_error:
+            raise self.device_info_error
+        return DeviceInfo(mac_address=self.mac, bluetooth_proxy_feature_flags=self.features)
 
     def subscribe_bluetooth_le_raw_advertisements(self, callback):
         self.on_advertisements = callback
-        return lambda: setattr(self, "on_advertisements", None)
+
+        def unsubscribe():
+            self.on_advertisements = None
+            if self.unsubscribe_error:
+                raise self.unsubscribe_error
+
+        return unsubscribe
+
+    # what the device connection asks of a node besides Bluetooth
+    async def connect(self, login, on_stop):
+        self.on_stop = on_stop
+
+    async def list_entities_services(self):
+        return [], []
+
+    def subscribe_states(self, callback): ...
+
+    async def disconnect(self):
+        self.disconnected = True
+
+    async def drop(self):
+        await self.on_stop(False)
 
     def advertise(self, data: bytes, rssi: int = -60):
         response = BluetoothLERawAdvertisementsResponse()
@@ -93,14 +136,14 @@ async def ble_and_node():
     client = FakeAPIClient()
     ble = BLEService(sources=[])
     await ble.start()
-    await ble.add_source(await ESPhomeBLESource.of(client))
+    await ble.add_source(await ble_source_of(client))
     yield ble, client
     await ble.stop()
 
 
 async def test_only_nodes_streaming_raw_advertisements_are_sources():
-    assert await ESPhomeBLESource.of(FakeAPIClient(features=0)) is None
-    assert (await ESPhomeBLESource.of(FakeAPIClient())).name == "esphome:11:22:33:44:55:66"
+    assert await ble_source_of(FakeAPIClient(features=0)) is None
+    assert (await ble_source_of(FakeAPIClient())).name == "esphome:11:22:33:44:55:66"
 
 
 async def test_advertisements_and_scan_responses_merge_into_one_device(ble_and_node):
@@ -152,3 +195,201 @@ async def test_rotating_addresses_dont_grow_the_memory(ble_and_node, monkeypatch
         response.advertisements.add(address=address, rssi=-60, address_type=1, data=MATTER_ADV)
         client.on_advertisements(response)
     assert list(source._heard) == ["00:00:00:00:00:01", "00:00:00:00:00:02"]
+
+
+class Nodes:
+    """Stands for `APIClient` where the device connections open one: each node the hub connects to is a fake."""
+
+    def __init__(self):
+        self.clients: list[FakeAPIClient] = []
+        self.options: dict[str, Any] = {}  # what the nodes are like from now on: features, device_info_error, …
+
+    def __call__(self, address: str, port: int, password: str | None, noise_psk: str | None = None) -> FakeAPIClient:
+        self.clients.append(FakeAPIClient(mac=NODES[address.removesuffix(".local")], **self.options))
+        return self.clients[-1]
+
+    def connection_of(self, node: str) -> FakeAPIClient:
+        """The newest connection to the node."""
+        return next(client for client in reversed(self.clients) if client.mac == NODES[node])
+
+
+def lent(node: str) -> str:
+    return f"esphome:{NODES[node]}"
+
+
+def sources(ble: BLEService) -> list[str]:
+    return sorted(ble._sources)
+
+
+@pytest.fixture
+async def ble() -> AsyncIterator[BLEService]:
+    ble = BLEService(sources=[])
+    await ble.start()
+    yield ble
+    await ble.stop()
+
+
+@pytest.fixture
+def nodes(monkeypatch: pytest.MonkeyPatch) -> Nodes:
+    nodes = Nodes()
+    monkeypatch.setattr("majordom_esphome.connection.APIClient", nodes)
+    monkeypatch.setattr("majordom_esphome.connection.RECONNECT_DELAY_FIRST", 0.3)
+    return nodes
+
+
+@pytest.fixture
+def hub(deps: AbstractController.Dependencies, ble: BLEService, nodes: Nodes) -> AbstractController.Dependencies:
+    return deps.copy(ble_discovery_service=ble)
+
+
+@pytest.fixture
+async def esphome(hub: AbstractController.Dependencies) -> AsyncIterator[ESPhomeController]:
+    controller = ESPhomeController(hub)
+    await controller.start()
+    yield controller
+    await controller.stop()
+
+
+async def announce(controller: ESPhomeController, mdns: FakeMDNS, node: str) -> Discovery:
+    mac = NODES[node].replace(":", "")
+    await mdns.announce(Advert(name=node, mac=mac, server=f"{node}.local.", addresses=[]))
+    return controller.discoveries[controller.device_uuid(mac)]
+
+
+async def pair(controller: ESPhomeController, mdns: FakeMDNS, node: str) -> ESPhomeDevice:
+    discovery = await announce(controller, mdns, node)
+    await hub_creates_device(controller.dependencies, discovery, name=node)
+    await controller.pair_device(discovery, None)
+    async with controller.dependencies.make_device_repository() as repo:
+        device = await repo.get(discovery.id, as_=ESPhomeDevice)
+    assert device is not None
+    return device
+
+
+async def test_a_paired_node_with_a_proxy_lends_its_radio(esphome, mdns, nodes, ble):
+    listener = Listener()
+    ble.register(listener, {UUID(MATTER)})
+
+    await pair(esphome, mdns, "kitchen")
+    await wait_until(lambda: sources(ble) == [lent("kitchen")], message="the node to be lent")
+    nodes.connection_of("kitchen").advertise(MATTER_ADV)
+    await asyncio.sleep(0.01)
+
+    assert [info.source for info in listener.heard] == [lent("kitchen")]
+
+
+def test_the_setting_is_on_by_default():
+    assert ESPhomeSettings().bluetooth_proxies is True
+
+
+async def test_a_node_without_a_proxy_lends_nothing(esphome, mdns, nodes, ble):
+    nodes.options["features"] = 0
+
+    await pair(esphome, mdns, "kitchen")
+    await asyncio.sleep(0.05)
+
+    assert sources(ble) == []
+
+
+async def test_nothing_is_lent_while_the_setting_is_off(hub, mdns, nodes, ble):
+    controller = ESPhomeController(hub.copy(settings=ESPhomeSettings(bluetooth_proxies=False)))
+    await controller.start()
+    try:
+        await pair(controller, mdns, "kitchen")
+        await asyncio.sleep(0.05)
+        assert sources(ble) == []
+    finally:
+        await controller.stop()
+
+
+async def test_unpairing_a_node_takes_back_only_its_radio(esphome, mdns, nodes, ble):
+    kitchen = await pair(esphome, mdns, "kitchen")
+    await pair(esphome, mdns, "garage")
+    await wait_until(lambda: sources(ble) == [lent("kitchen"), lent("garage")], message="both nodes to be lent")
+
+    await esphome.unpair(kitchen)
+
+    assert sources(ble) == [lent("garage")]
+    assert nodes.connection_of("kitchen").on_advertisements is None
+
+
+async def test_a_node_that_drops_is_taken_back_and_lent_once_when_it_returns(esphome, mdns, nodes, ble):
+    await pair(esphome, mdns, "kitchen")
+    await wait_until(lambda: sources(ble) == [lent("kitchen")], message="the node to be lent")
+    dropped = nodes.connection_of("kitchen")
+
+    await dropped.drop()
+    await wait_until(lambda: sources(ble) == [], message="the dropped node to be taken back")
+    assert dropped.on_advertisements is None
+
+    await wait_until(lambda: sources(ble) == [lent("kitchen")], message="the node to be lent again")
+    assert nodes.connection_of("kitchen") is not dropped and dropped.on_advertisements is None
+
+
+async def test_stop_takes_back_every_radio(esphome, mdns, nodes, ble):
+    await pair(esphome, mdns, "kitchen")
+    await pair(esphome, mdns, "garage")
+    await wait_until(lambda: len(sources(ble)) == 2, message="both nodes to be lent")
+
+    await esphome.stop()
+
+    assert sources(ble) == []
+    assert all(client.on_advertisements is None and client.disconnected for client in nodes.clients)
+    assert leaked_tasks() == []
+
+
+async def test_a_restarted_controller_lends_each_node_once(esphome, hub, mdns, nodes, ble):
+    listener = Listener()
+    ble.register(listener, {UUID(MATTER)})
+    await pair(esphome, mdns, "kitchen")
+    await wait_until(lambda: sources(ble) == [lent("kitchen")], message="the node to be lent")
+    first = nodes.connection_of("kitchen")
+    await esphome.stop()
+
+    restarted = ESPhomeController(hub)
+    await restarted.start()
+    try:
+        await wait_until(lambda: sources(ble) == [lent("kitchen")], message="the node to be lent again")
+        nodes.connection_of("kitchen").advertise(MATTER_ADV)
+        await asyncio.sleep(0.01)
+
+        assert nodes.connection_of("kitchen") is not first and first.on_advertisements is None
+        assert len(listener.heard) == 1
+    finally:
+        await restarted.stop()
+    assert sources(ble) == [] and leaked_tasks() == []
+
+
+async def test_a_failed_pairing_leaves_no_radio_lent(esphome, mdns, nodes, ble):
+    await announce(esphome, mdns, "kitchen")  # the Hub never creates the device: the pairing fails after connecting
+    (discovery,) = esphome.discoveries.values()
+
+    with pytest.raises(LookupError):
+        await esphome.pair_device(discovery, None)
+
+    assert sources(ble) == []
+    assert nodes.connection_of("kitchen").on_advertisements is None
+    assert leaked_tasks() == []
+
+
+async def test_a_node_whose_bluetooth_fails_to_set_up_stays_connected(
+    esphome, mdns, nodes, ble, output: RecordingControllerOutput
+):
+    nodes.options["device_info_error"] = APIConnectionError("the node went quiet")
+
+    device = await pair(esphome, mdns, "kitchen")
+    await asyncio.sleep(0.05)
+
+    assert device.available and output.lost_devices == []
+    assert sources(ble) == []
+
+
+async def test_stop_finishes_when_a_radio_cannot_be_taken_back(esphome, mdns, nodes, ble):
+    nodes.options["unsubscribe_error"] = RuntimeError("the node is gone")
+    await pair(esphome, mdns, "kitchen")
+    await wait_until(lambda: sources(ble) == [lent("kitchen")], message="the node to be lent")
+
+    await esphome.stop()
+
+    assert nodes.connection_of("kitchen").disconnected
+    assert sources(ble) == [] and leaked_tasks() == []

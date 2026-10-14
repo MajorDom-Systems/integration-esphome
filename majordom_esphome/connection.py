@@ -12,9 +12,6 @@ from aioesphomeapi import (
     InvalidEncryptionKeyAPIError,
     RequiresEncryptionAPIError,
 )
-from majordom_integration_sdk.discovery import BLEService
-
-from majordom_esphome.bluetooth import ESPhomeBLESource
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +33,7 @@ RECONNECT_DELAY_MAX = 30.0
 StateCallback = Callable[[UUID, EntityInfo, EntityState], Awaitable[None]]
 AvailabilityCallback = Callable[[UUID, bool, str | None], Awaitable[None]]  # (device id, available, reason if not)
 AddressesCallback = Callable[[UUID, list[str]], Awaitable[None]]
+ClientCallback = Callable[[UUID, APIClient | None], Awaitable[None]]  # (device id, its client if connected, else None)
 
 
 class KeyRefusedError(ConnectionError):
@@ -67,7 +65,7 @@ class ESPhomeDeviceConnection:
         on_state: StateCallback,
         on_availability: AvailabilityCallback | None = None,
         on_addresses: AddressesCallback | None = None,
-        ble: BLEService | None = None,  # a node lending its Bluetooth radio adds it to this service as a source
+        on_client: ClientCallback | None = None,
     ) -> None:
         self.device_id = device_id
         self.addresses = list(addresses)  # hostname and IPs, tried in order; reordered by what worked
@@ -76,8 +74,7 @@ class ESPhomeDeviceConnection:
         self.on_state_callback = on_state
         self.on_availability_callback = on_availability
         self.on_addresses_callback = on_addresses
-        self.ble = ble
-        self._source: ESPhomeBLESource | None = None
+        self.on_client_callback = on_client
 
         self.last_error: Exception | None = None
         self._client: APIClient | None = None
@@ -89,6 +86,7 @@ class ESPhomeDeviceConnection:
         self._failed = asyncio.Event()
         self._disconnected = asyncio.Event()
         self._available: bool | None = None  # what the callback was last told
+        self._reported_client: APIClient | None = None  # what the client callback was last told
 
     @property
     def ready(self) -> bool:
@@ -213,7 +211,7 @@ class ESPhomeDeviceConnection:
                 await self._close_client()
                 continue
             await self._remember(address, failed)
-            await self._lend_bluetooth()
+            await self._report_client(self._client)
             return
         raise error
 
@@ -227,11 +225,6 @@ class ESPhomeDeviceConnection:
         self.last_error = None
         self._ready.set()
         logger.info("Connected to ESPHome device %s at %s:%s", self.device_id, address, self.port)
-
-    async def _lend_bluetooth(self) -> None:
-        if self.ble and self._client and (source := await ESPhomeBLESource.of(self._client)):
-            self._source = source
-            await self.ble.add_source(source)
 
     async def _remember(self, address: str, failed: list[str]) -> None:
         """Working address first, addresses that failed this time last."""
@@ -275,10 +268,17 @@ class ESPhomeDeviceConnection:
         except Exception:
             logger.exception("Error reporting availability of %s", self.device_id)
 
+    async def _report_client(self, client: APIClient | None) -> None:
+        if self.on_client_callback is None or self._reported_client is client:
+            return
+        self._reported_client = client
+        try:
+            await self.on_client_callback(self.device_id, client)
+        except Exception:
+            logger.exception("Error reporting the client of %s", self.device_id)
+
     async def _close_client(self) -> None:
-        if self._source:
-            await self.ble.remove_source(self._source.name)
-            self._source = None
+        await self._report_client(None)
         client, self._client = self._client, None
         if client is not None:
             with contextlib.suppress(Exception):

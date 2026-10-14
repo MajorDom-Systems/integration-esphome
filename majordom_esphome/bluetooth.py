@@ -7,7 +7,6 @@ and another one together.
 
 import contextlib
 from collections.abc import Callable
-from typing import Self
 
 from aioesphomeapi import APIClient, APIConnectionError, BluetoothLERawAdvertisementsResponse, BluetoothProxyFeature
 from bleak.backends.device import BLEDevice
@@ -31,15 +30,6 @@ class ESPhomeBLESource:
         self._client, self._features = client, features
         self._unsubscribe: Callable[[], None] | None = None
         self._heard: dict[str, tuple[AdvertisementData, int]] = {}  # address -> merged advertisement, address type
-
-    @classmethod
-    async def of(cls, client: APIClient) -> Self | None:
-        """The node's source, if it lends Bluetooth this hub can use."""
-        info = await client.device_info()
-        features = BluetoothProxyFeature(info.bluetooth_proxy_feature_flags_compat(client.api_version))
-        if not features & BluetoothProxyFeature.RAW_ADVERTISEMENTS:  # firmware before 2023.? or no proxy
-            return None
-        return cls(client, info.bluetooth_mac_address or info.mac_address, features)
 
     async def start(self, on_advertisement: OnAdvertisement):
         def on_advertisements(response: BluetoothLERawAdvertisementsResponse):
@@ -136,3 +126,12 @@ class ESPhomeBLEConnection:
     async def disconnect(self):
         self._unsubscribe()
         await self._client.bluetooth_device_disconnect(self._address)
+
+
+async def ble_source_of(client: APIClient) -> ESPhomeBLESource | None:
+    """The node's source, if it lends Bluetooth this hub can use."""
+    info = await client.device_info()
+    features = BluetoothProxyFeature(info.bluetooth_proxy_feature_flags_compat(client.api_version))
+    if not features & BluetoothProxyFeature.RAW_ADVERTISEMENTS:  # firmware before 2023.? or no proxy
+        return None
+    return ESPhomeBLESource(client, info.bluetooth_mac_address or info.mac_address, features)
