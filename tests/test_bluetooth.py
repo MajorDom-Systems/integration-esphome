@@ -202,6 +202,25 @@ async def test_a_refused_connection_is_an_error(ble_and_node):
         await ble.connect("AA:BB:CC:DD:EE:FF")
 
 
+async def test_a_leased_node_stays_subscribed_but_mutes_its_advertisements(ble_and_node):
+    ble, client = ble_and_node
+    listener = Listener()
+    ble.register(listener, {UUID(MATTER)})
+    client.advertise(MATTER_ADV)
+    await asyncio.sleep(0.01)
+
+    async with ble.exclusive("AA:BB:CC:DD:EE:FF", owner="matter") as lease:
+        assert client.on_advertisements, "the node answers connects only to its subscriber"
+        client.advertise(NAME)
+        await asyncio.sleep(0.01)
+        assert len(listener.heard) == 1
+        await lease.connect()
+        assert client.connected == (DEVICE, 1)
+    client.advertise(MATTER_ADV)
+    await asyncio.sleep(0.01)
+    assert listener.heard[-1].advertisement.local_name == "Bulb"  # heard again, the muted name kept
+
+
 async def test_rotating_addresses_dont_grow_the_memory(ble_and_node, monkeypatch):
     ble, client = ble_and_node
     monkeypatch.setattr("majordom_esphome.bluetooth._REMEMBERED", 2)

@@ -35,6 +35,7 @@ class ESPhomeBLESource:
         self.name = f"esphome:{name}"
         self._client, self._features = client, features
         self._unsubscribe: Callable[[], None] | None = None
+        self._paused = False
         self._heard: dict[str, tuple[AdvertisementData, int]] = {}  # address -> merged advertisement, address type
 
     async def start(self, on_advertisement: OnAdvertisement):
@@ -44,7 +45,8 @@ class ESPhomeBLESource:
                 raw = advertisements[i]
                 address = int_to_bluetooth_address(raw.address)
                 device, adv = self._merge(address, raw.address_type, raw.rssi, raw.data)
-                on_advertisement(device, adv)
+                if not self._paused:
+                    on_advertisement(device, adv)
 
         self._unsubscribe = self._client.subscribe_bluetooth_le_raw_advertisements(on_advertisements)
 
@@ -68,6 +70,14 @@ class ESPhomeBLESource:
             self._unsubscribe = None
             with contextlib.suppress(APIConnectionError):
                 unsubscribe()
+
+    async def pause_scanning(self):
+        # muted, not unsubscribed: the node answers connects only to its subscriber, and stops scanning itself
+        # while it connects
+        self._paused = True
+
+    async def resume_scanning(self):
+        self._paused = False
 
     async def connect(self, address: str, on_disconnect: Callable[[], None]) -> "ESPhomeBLEConnection":
         if self._features & _CONNECTS != _CONNECTS:
