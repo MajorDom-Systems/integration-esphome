@@ -6,13 +6,16 @@ import asyncio
 import base64
 import logging
 import secrets
-from collections.abc import Coroutine
+from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 from uuid import UUID
 
 from aioesphomeapi import ZERO_NOISE_PSK, EntityInfo, EntityState
+from bleak.backends.device import BLEDevice
+from bleak.backends.scanner import AdvertisementData
 from majordom_integration_sdk.controller import AbstractController
+from majordom_integration_sdk.discovery.ble_discovery import BLEDiscoveryInfo, BLEDiscoveryService
 from majordom_integration_sdk.discovery.zeroconf_discovery import ZeroconfDiscoveryInfo, ZeroconfDiscoveryService
 from majordom_integration_sdk.schemas import (
     CredentialsType,
@@ -23,7 +26,7 @@ from majordom_integration_sdk.schemas.command import DeviceCommand
 from majordom_integration_sdk.schemas.device import Discovery
 from majordom_integration_sdk.schemas.parameter import ParameterVisibility
 
-from . import mapper
+from . import improv, mapper
 from .connection import ESPhomeDeviceConnection, describe_error
 from .models import (
     ESPhomeDevice,
@@ -34,6 +37,13 @@ from .models import (
 )
 
 logger = logging.getLogger(__name__)
+
+NODE_APPEAR_TIMEOUT = 60.0  # seconds for a node to announce itself over mDNS once it has joined Wi-Fi
+
+
+class WiFiCredentials(Protocol):
+    ssid: str
+    password: str
 
 
 @dataclass
@@ -47,6 +57,15 @@ class _DiscoveryData:
     zero_psk: bool  # the keyless node takes its key over the zero PSK (older firmware: only in plaintext)
 
 
+@dataclass
+class _ImprovNode:
+    """An unprovisioned node, waiting for Wi-Fi over BLE."""
+
+    name: str  # its node name, as far as BLE carries it
+    device: BLEDevice
+    advertisement: AdvertisementData
+
+
 class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
     name = "esphome"
 
@@ -57,6 +76,10 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
         self._discovery_data: dict[UUID, _DiscoveryData] = {}
         self._discovery_names: dict[str, UUID] = {}  # mDNS record name -> discovery id, for goodbyes
         self._zeroconf_cancel: Any | None = None
+        self._ble_cancel: Any | None = None
+        self._improv_nodes: dict[UUID, _ImprovNode] = {}
+        self._ble_names: dict[str, str] = {}  # BLE address -> advertised name: ESPHome sends it in few adverts
+        self._joining: dict[str, asyncio.Future[Discovery]] = {}  # BLE name -> the node's mDNS discovery, once seen
         self._paired: set[UUID] = set()
         self._tasks: set[asyncio.Task[None]] = set()
         self._states: dict[UUID, dict[int, EntityState]] = {}
@@ -79,6 +102,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
         self._zeroconf_cancel = self.dependencies.zeroconf_discovery_service.register(
             self, services={"_esphomelib._tcp.local."}
         )
+        self._ble_cancel = self.dependencies.ble_discovery_service.register(self, {UUID(improv.SERVICE_UUID)})
         await self._load_paired_devices()
 
     async def stop(self) -> None:
@@ -86,6 +110,9 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
         if self._zeroconf_cancel:
             self._zeroconf_cancel()
             self._zeroconf_cancel = None
+        if self._ble_cancel:
+            self._ble_cancel()
+            self._ble_cancel = None
 
         tasks = list(self._tasks)
         for task in tasks:
@@ -145,6 +172,9 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
                 addresses, port, mac, node_name, service_info.name, keyless, zero_psk
             )
             self._discovery_names[service_info.name] = device_id
+            for ble_name, joined in self._joining.items():
+                if improv.is_node(ble_name, node_name) and not joined.done():
+                    joined.set_result(discovery)
             known = self._discoveries.get(device_id)
             if known == discovery:
                 return
@@ -156,6 +186,49 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
             logger.debug("Discovered ESPHome node %s at %s:%s", node_name, addresses, port)
         except Exception:
             logger.exception("Error handling zeroconf discovery")
+
+    # BLEDiscoveryListener: unprovisioned nodes advertising Improv
+
+    async def ble_did_discover_device(self, ble: BLEDiscoveryService, info: BLEDiscoveryInfo) -> None:
+        await self._on_improv_advert(info)
+
+    async def ble_did_update_device(self, ble: BLEDiscoveryService, info: BLEDiscoveryInfo) -> None:
+        await self._on_improv_advert(info)
+
+    async def ble_did_remove_device(self, ble: BLEDiscoveryService, info: BLEDiscoveryInfo) -> None:
+        name = self._ble_names.pop(info.device.address, None)
+        device_id = self.device_uuid(f"improv:{name}") if name else None
+        if device_id is not None and self._discoveries.pop(device_id, None) is not None:
+            self._improv_nodes.pop(device_id, None)
+            await self.dependencies.output.controller_did_lose_discovery(self, device_id)
+
+    async def _on_improv_advert(self, info: BLEDiscoveryInfo) -> None:
+        """Offer a node waiting for Wi-Fi. Improv carries no identity but the node name, so the discovery is keyed by
+        it (the BLE address may be random, and differs from the MAC the node is known by once on the network)."""
+        try:
+            name = info.advertisement.local_name or self._ble_names.get(info.device.address)
+            if name is None or not improv.waits_for_wifi(info.advertisement):
+                return
+            self._ble_names[info.device.address] = name
+            device_id = self.device_uuid(f"improv:{name}")
+            self._improv_nodes[device_id] = _ImprovNode(name, info.device, info.advertisement)
+            if device_id in self._discoveries:  # adverts repeat all the time: keep the discovery (and its last error)
+                return
+            discovery = Discovery(
+                id=device_id,
+                integration=self.name,
+                transport="ble",
+                device_manufacturer="esphome",
+                device_name=name,
+                device_category=None,
+                device_icon=None,
+                expected_credentials_options=[CredentialsType.none],  # the Hub gives it its own Wi-Fi
+            )
+            self._discoveries[device_id] = discovery
+            await self.dependencies.output.controller_did_receive_discovery(self, discovery)
+            logger.debug("Discovered unprovisioned ESPHome node %s over BLE", name)
+        except Exception:
+            logger.exception("Error handling BLE discovery")
 
     @staticmethod
     def _announced_addresses(info: ZeroconfDiscoveryInfo, node_name: str) -> list[str]:
@@ -315,11 +388,70 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
         if events:
             await self.dependencies.output.controller_did_receive_events(self, events)
 
-    async def pair_device(
-        self,
-        discovery: Discovery,
-        credentials: ProvidedCredentials | None,
-    ) -> None:
+    async def pair_device(self, discovery: Discovery, credentials: ProvidedCredentials | None) -> UUID | None:
+        if discovery.id in self._improv_nodes:
+            return await self._pair_over_ble(discovery)
+        await self._pair_over_api(discovery, credentials)
+        return None
+
+    async def _pair_over_ble(self, discovery: Discovery) -> UUID:
+        """Give the node the Hub's Wi-Fi, wait for it on the network, then pair it like any other node. The Hub's device
+        takes the node's own identity (from its MAC), which is what it is found by from then on; it is returned."""
+        logger.info("Setting up ESPHome device %s over BLE", discovery.device_name)
+        node = self._improv_nodes[discovery.id]
+        try:
+            wifi = await self._wifi_credentials()
+            async with self.dependencies.make_device_repository() as repo:
+                hub_device = await repo.get(discovery.id, as_=ESPhomeDevice)
+            if hub_device is None:
+                raise LookupError("The Hub has not created a device for this discovery")
+            joined = self._joining[node.name] = asyncio.get_running_loop().create_future()
+            try:
+                await improv.provision(
+                    node.device,
+                    node.advertisement,
+                    wifi.ssid,
+                    wifi.password,
+                    on_authorization_required=lambda: self._report_error(discovery.id, improv.PRESS_BUTTON),
+                )
+                async with asyncio.timeout(NODE_APPEAR_TIMEOUT):
+                    on_network = await joined
+            except TimeoutError:
+                raise TimeoutError(f"The device joined {wifi.ssid} but did not show up on the network") from None
+            finally:
+                self._joining.pop(node.name, None)
+            async with self.dependencies.make_device_repository() as repo:
+                await repo.save(hub_device.model_copy(update={"id": on_network.id}), previous_id=discovery.id)
+            await self._pair_over_api(on_network, credentials=None)
+        except Exception as exc:
+            logger.exception("Setting up %s over BLE failed", discovery.device_name)
+            reason = str(exc) if isinstance(exc, ValueError | LookupError | TimeoutError | improv.SetupError) else None
+            await self._report_error(discovery.id, reason or describe_error(exc.__cause__ or exc))
+            raise
+        self._discoveries.pop(discovery.id, None)
+        self._improv_nodes.pop(discovery.id, None)
+        # the Hub paired the node through its BLE discovery: the one it announced over mDNS is gone too
+        await self.dependencies.output.controller_did_lose_discovery(self, on_network.id)
+        return on_network.id
+
+    async def _wifi_credentials(self) -> WiFiCredentials:
+        # injected by the Hub from SDK feature/wifi-credentials on; older Hubs have none
+        provider: Callable[[], Awaitable[WiFiCredentials | None]] | None = getattr(
+            self.dependencies, "wifi_credentials", None
+        )
+        credentials = await provider() if provider is not None else None
+        if credentials is None:
+            raise ValueError("The Hub is not connected to Wi-Fi, so it has no network to give the device")
+        return credentials
+
+    async def _report_error(self, discovery_id: UUID, reason: str) -> None:
+        """Show the user why pairing a discovery failed (or what it waits for), while it is still offered."""
+        if (known := self._discoveries.get(discovery_id)) is not None:
+            failed = known.model_copy(update={"last_error": reason})
+            self._discoveries[discovery_id] = failed
+            await self.dependencies.output.controller_did_update_discovery(self, failed)
+
+    async def _pair_over_api(self, discovery: Discovery, credentials: ProvidedCredentials | None) -> None:
         logger.info("Pairing ESPHome device: %s", discovery.id)
         known = self._discoveries.get(discovery.id, discovery)
         conn: ESPhomeDeviceConnection | None = None

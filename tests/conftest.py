@@ -25,6 +25,24 @@ def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line("markers", "catalogue: sweep over one virtual node per entity kind (run with -m catalogue)")
 
 
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--include-hardware-iot",
+        action="store_true",
+        default=False,
+        help="Run tests that require physical IoT hardware",
+    )
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """As in the Hub: a hardware test selected without the flag (e.g. by `-m ""`) is skipped, not run."""
+    if not config.getoption("--include-hardware-iot"):
+        skip = pytest.mark.skip(reason="requires physical IoT hardware; pass --include-hardware-iot to run")
+        for item in items:
+            if item.get_closest_marker("hardware_iot_device"):
+                item.add_marker(skip)
+
+
 @pytest.fixture(scope="session")
 def build_errors() -> dict[str, str | None]:
     """Why a catalogue node could not be built (kind -> error), filled in by the collection hook."""
