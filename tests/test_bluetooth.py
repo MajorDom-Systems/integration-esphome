@@ -1,12 +1,19 @@
 """ESPHome nodes lending their Bluetooth as sources of the hub's BLEService."""
 
 import asyncio
-from collections.abc import AsyncIterator
-from typing import Any
+from collections.abc import AsyncIterator, Awaitable, Callable
+from typing import Any, cast
+from unittest.mock import AsyncMock
 from uuid import UUID
 
 import pytest
-from aioesphomeapi import APIConnectionError, BluetoothLERawAdvertisementsResponse, BluetoothProxyFeature, DeviceInfo
+from aioesphomeapi import (
+    APIClient,
+    APIConnectionError,
+    BluetoothLERawAdvertisementsResponse,
+    BluetoothProxyFeature,
+    DeviceInfo,
+)
 from aioesphomeapi.model import (
     APIVersion,
     BluetoothGATTCharacteristic,
@@ -19,7 +26,7 @@ from majordom_integration_sdk.discovery import BLEService
 from majordom_integration_sdk.schemas.device import Discovery
 from majordom_integration_sdk.testing import RecordingControllerOutput
 
-from majordom_esphome.bluetooth import ble_source_of
+from majordom_esphome.bluetooth import ESPhomeBLESource, ble_source_of
 from majordom_esphome.controller import ESPhomeController
 from majordom_esphome.models import ESPhomeDevice, ESPhomeSettings
 from tests.helpers import hub_creates_device, leaked_tasks, wait_until
@@ -51,8 +58,8 @@ class FakeAPIClient:
     ):
         self.features, self.answers, self.mac = features, answers, mac
         self.device_info_error, self.unsubscribe_error = device_info_error, unsubscribe_error
-        self.on_advertisements = None
-        self.on_stop = None
+        self.on_advertisements: Callable[[BluetoothLERawAdvertisementsResponse], None] | None = None
+        self.on_stop: Callable[[bool], Awaitable[None]] | None = None
         self.disconnected = False
         self.writes: list[tuple[int, bytes]] = []
         self.descriptors: list[tuple[int, bytes]] = []
@@ -86,11 +93,13 @@ class FakeAPIClient:
         self.disconnected = True
 
     async def drop(self):
+        assert self.on_stop
         await self.on_stop(False)
 
     def advertise(self, data: bytes, rssi: int = -60):
         response = BluetoothLERawAdvertisementsResponse()
         response.advertisements.add(address=DEVICE, rssi=rssi, address_type=1, data=data)
+        assert self.on_advertisements
         self.on_advertisements(response)
 
     async def bluetooth_device_connect(self, address, on_state, feature_flags=0, address_type=None, **kwargs):
@@ -119,6 +128,10 @@ class FakeAPIClient:
     async def bluetooth_device_disconnect(self, address): ...
 
 
+async def source_of(client: FakeAPIClient) -> ESPhomeBLESource | None:
+    return await ble_source_of(cast(APIClient, client))
+
+
 class Listener:
     def __init__(self):
         self.heard = []
@@ -136,14 +149,17 @@ async def ble_and_node():
     client = FakeAPIClient()
     ble = BLEService(sources=[])
     await ble.start()
-    await ble.add_source(await ble_source_of(client))
+    source = await source_of(client)
+    assert source
+    await ble.add_source(source)
     yield ble, client
     await ble.stop()
 
 
 async def test_only_nodes_streaming_raw_advertisements_are_sources():
-    assert await ble_source_of(FakeAPIClient(features=0)) is None
-    assert (await ble_source_of(FakeAPIClient())).name == "esphome:11:22:33:44:55:66"
+    assert await source_of(FakeAPIClient(features=0)) is None
+    source = await source_of(FakeAPIClient())
+    assert source and source.name == "esphome:11:22:33:44:55:66"
 
 
 async def test_advertisements_and_scan_responses_merge_into_one_device(ble_and_node):
@@ -360,11 +376,17 @@ async def test_a_restarted_controller_lends_each_node_once(esphome, hub, mdns, n
     assert sources(ble) == [] and leaked_tasks() == []
 
 
-async def test_a_failed_pairing_leaves_no_radio_lent(esphome, mdns, nodes, ble):
-    await announce(esphome, mdns, "kitchen")  # the Hub never creates the device: the pairing fails after connecting
-    (discovery,) = esphome.discoveries.values()
+async def test_a_failed_pairing_leaves_no_radio_lent(
+    esphome, mdns, nodes, ble, output: RecordingControllerOutput, monkeypatch
+):
+    discovery = await announce(esphome, mdns, "kitchen")
+    await hub_creates_device(esphome.dependencies, discovery, name="kitchen")
+    # the pairing fails after connecting, once the node is lent
+    monkeypatch.setattr(
+        output, "controller_did_connect_device", AsyncMock(side_effect=RuntimeError("the Hub went away"))
+    )
 
-    with pytest.raises(LookupError):
+    with pytest.raises(RuntimeError):
         await esphome.pair_device(discovery, None)
 
     assert sources(ble) == []

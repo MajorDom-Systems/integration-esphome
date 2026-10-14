@@ -93,7 +93,8 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
 
     @property
     def _settings(self) -> ESPhomeSettings:
-        return self.dependencies.settings or ESPhomeSettings()
+        settings = self.dependencies.settings
+        return settings if isinstance(settings, ESPhomeSettings) else ESPhomeSettings()
 
     @property
     def discoveries(self) -> dict[UUID, Discovery]:

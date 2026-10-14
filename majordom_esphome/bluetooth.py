@@ -8,7 +8,13 @@ and another one together.
 import contextlib
 from collections.abc import Callable
 
-from aioesphomeapi import APIClient, APIConnectionError, BluetoothLERawAdvertisementsResponse, BluetoothProxyFeature
+from aioesphomeapi import (
+    APIClient,
+    APIConnectionError,
+    BluetoothGATTService,
+    BluetoothLERawAdvertisementsResponse,
+    BluetoothProxyFeature,
+)
 from bleak.backends.device import BLEDevice
 from bleak.backends.scanner import AdvertisementData
 from bluetooth_data_tools import int_to_bluetooth_address, parse_advertisement_data_bytes
@@ -87,18 +93,21 @@ class ESPhomeBLESource:
 class ESPhomeBLEConnection:
     def __init__(self, client: APIClient, address: int, mtu: int, unsubscribe: Callable[[], None]):
         self._client, self._address, self.mtu, self._unsubscribe = client, address, mtu or 23, unsubscribe
-        self._services = None
+        self._services: list[BluetoothGATTService] | None = None
         self._notifying: dict[int, Callable] = {}  # handle -> stop
 
-    async def services(self) -> list[GattService]:
+    async def _gatt_services(self) -> list[BluetoothGATTService]:
         if self._services is None:  # the proxy forgets them once sent
             self._services = (await self._client.bluetooth_gatt_get_services(self._address)).services
+        return self._services
+
+    async def services(self) -> list[GattService]:
         return [
             GattService(s.uuid, s.handle, tuple(
                 GattCharacteristic(c.uuid, c.handle, tuple(n for bit, n in _PROPERTIES.items() if c.properties & bit))
                 for c in s.characteristics
             ))
-            for s in self._services
+            for s in await self._gatt_services()
         ]  # fmt: skip
 
     async def read(self, handle: int) -> bytes:
@@ -108,8 +117,7 @@ class ESPhomeBLEConnection:
         await self._client.bluetooth_gatt_write(self._address, handle, data, response)
 
     async def start_notify(self, handle: int, callback: Callable[[bytes], None]):
-        await self.services()
-        characteristic = next(c for s in self._services for c in s.characteristics if c.handle == handle)
+        characteristic = next(c for s in await self._gatt_services() for c in s.characteristics if c.handle == handle)
         stop, _ = await self._client.bluetooth_gatt_start_notify(self._address, handle, lambda _, d: callback(bytes(d)))
         self._notifying[handle] = stop
         # the proxy leaves the client characteristic configuration to the client
