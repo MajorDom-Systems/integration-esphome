@@ -168,7 +168,7 @@ command on a read-only parameter, out-of-range values, offline device
 - [x] **Diagnosable**: connection failures and unexpected errors are logged with their cause
 - [x] **Parameter metadata**: `visibility` follows the entity category, and `main_parameter` is a
 one-tap toggle
-- [ ] **Owned**: a listed maintainer who keeps it working as ESPHome and the library evolve
+- [x] **Owned**: maintained by Parker Industries, who keep it working as ESPHome and the library evolve
 
 ### Parameter mapping
 
