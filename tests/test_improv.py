@@ -26,6 +26,7 @@ from improv_ble_client.protocol import (
     WiFiSettingsCmd,
     WiFiSettingsRes,
 )
+from majordom_integration_sdk import MissingCredentialsError
 from majordom_integration_sdk.controller import AbstractController
 from majordom_integration_sdk.discovery.ble_discovery import BLEDiscoveryInfo
 from majordom_integration_sdk.schemas import CredentialsType
@@ -34,7 +35,7 @@ from majordom_integration_sdk.testing import RecordingControllerOutput
 
 from majordom_esphome import controller as controller_module
 from majordom_esphome import improv
-from majordom_esphome.controller import NO_WIFI_CREDENTIALS, ESPhomeController, NoWiFiCredentialsError
+from majordom_esphome.controller import ESPhomeController
 from majordom_esphome.models import ESPhomeDevice
 from tests.helpers import (
     HubDependencies,
@@ -404,11 +405,12 @@ async def test_a_hub_without_wifi_cannot_set_up_the_node(
     hub_wifi[0] = None
     node.reachable = False  # any BLE step would fail with another error
 
-    with pytest.raises(NoWiFiCredentialsError):
+    with pytest.raises(MissingCredentialsError) as raised:
         await controller.pair_device(ble_discovery, credentials=None)
 
+    assert raised.value.type == MissingCredentialsError.WIFI
     assert node.received == []
-    assert await last_error(output, ble_discovery) == NO_WIFI_CREDENTIALS
+    assert_missing_wifi(await last_error(output, ble_discovery))
     await assert_not_paired(controller.dependencies, ble_discovery.id)
 
 
@@ -422,19 +424,20 @@ async def test_a_hub_whose_sdk_has_no_wifi_credentials_cannot_set_up_the_node_ei
         (found,) = controller.discoveries.values()
         await hub_creates_device(controller.dependencies, found)
 
-        with pytest.raises(NoWiFiCredentialsError):
+        with pytest.raises(MissingCredentialsError):
             await controller.pair_device(found, credentials=None)
 
         assert node.received == []
-        assert await last_error(output, found) == NO_WIFI_CREDENTIALS
+        assert_missing_wifi(await last_error(output, found))
     finally:
         await controller.stop()
 
 
-def test_no_wifi_credentials_is_a_lookup_error_the_hub_already_handles():
-    assert issubclass(NoWiFiCredentialsError, LookupError)
-    assert str(NoWiFiCredentialsError()) == NO_WIFI_CREDENTIALS
-    assert NO_WIFI_CREDENTIALS.startswith("No Wi-Fi credentials found")
+def assert_missing_wifi(last_error: str | None) -> None:
+    """The app reads the missing credentials type back from the discovery's last_error."""
+    parsed = MissingCredentialsError.parse(last_error)
+    assert parsed is not None
+    assert parsed.type == MissingCredentialsError.WIFI
 
 
 async def test_the_reason_stays_on_the_discovery_while_the_node_keeps_advertising(

@@ -101,10 +101,11 @@ by the name it advertised, which ESPHome cuts to 20 characters), then pairs it l
 included. The Hub's device takes the node's own identity (`pair_device` returns it). The Wi-Fi comes from the Hub's
 `wifi_credentials` dependency (SDK `feature/wifi-credentials`).
 - **No Wi-Fi on the Hub (e.g. on Ethernet):** when `wifi_credentials()` returns `None` (or the Hub's SDK has no such
-dependency), `pair_device` of a `ble` discovery raises `NoWiFiCredentialsError` (a `LookupError`, exported by the
-package) before any BLE step, and sets the discovery's `last_error` to `NO_WIFI_CREDENTIALS` (it starts with
-`No Wi-Fi credentials found`). The app tells it from other failures by that text, asks the user for the Wi-Fi network
-the node should join, has the Hub save it (its `set_wifi` endpoint: saved, not connected to), then pairs again.
+dependency), `pair_device` of a `ble` discovery raises the SDK's `MissingCredentialsError` with type `wifi` before any
+BLE step, and sets the discovery's `last_error` to its message (`Missing credentials: wifi`, read back with
+`MissingCredentialsError.parse`). The app tells it from other failures by that type, asks the user for the Wi-Fi
+network the node should join, has the Hub save it (its `set_wifi` endpoint: saved, not connected to), then pairs again.
+`wifi` is the only missing credentials type this integration raises.
 
 ### Required harness
 

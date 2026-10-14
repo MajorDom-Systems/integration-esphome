@@ -14,6 +14,7 @@ from uuid import UUID
 from aioesphomeapi import ZERO_NOISE_PSK, EntityInfo, EntityState
 from bleak.backends.device import BLEDevice
 from bleak.backends.scanner import AdvertisementData
+from majordom_integration_sdk import MissingCredentialsError
 from majordom_integration_sdk.controller import AbstractController
 from majordom_integration_sdk.discovery.ble_discovery import BLEDiscoveryInfo, BLEDiscoveryService
 from majordom_integration_sdk.discovery.zeroconf_discovery import ZeroconfDiscoveryInfo, ZeroconfDiscoveryService
@@ -44,17 +45,6 @@ NODE_APPEAR_TIMEOUT = 60.0  # seconds for a node to announce itself over mDNS on
 class WiFiCredentials(Protocol):
     ssid: str
     password: str
-
-
-NO_WIFI_CREDENTIALS = "No Wi-Fi credentials found: the Hub has no Wi-Fi network to give the device"
-
-
-class NoWiFiCredentialsError(LookupError):
-    """The Hub has no Wi-Fi to give a node set up over BLE (e.g. it is on Ethernet). Raised before the node is touched,
-    with NO_WIFI_CREDENTIALS as the discovery's last_error, so the app can ask the user for the network instead."""
-
-    def __init__(self) -> None:
-        super().__init__(NO_WIFI_CREDENTIALS)
 
 
 @dataclass
@@ -458,7 +448,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
         )
         credentials = await provider() if provider is not None else None
         if credentials is None:
-            raise NoWiFiCredentialsError
+            raise MissingCredentialsError(MissingCredentialsError.WIFI)
         return credentials
 
     async def _report_error(self, discovery_id: UUID, reason: str) -> None:
