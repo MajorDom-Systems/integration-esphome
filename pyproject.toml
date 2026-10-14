@@ -77,11 +77,7 @@ pythonpath = ["."]
 filterwarnings = ["once"]
 timeout = 30
 # the catalogue sweep builds a node per entity kind: opt in with `-m catalogue` (the monthly canary does)
-# hardware tests also need `--include-hardware-iot` (tests/hardware/run_hardware.sh passes both)
-addopts = '-m "not catalogue and not hardware_iot_device"'
-markers = [
-    "hardware_iot_device: marks tests that require physical IoT hardware (deselected by default)",
-]
+addopts = '-m "not catalogue"'
 
 [tool.coverage.run]
 omit = ["tests/*"]
