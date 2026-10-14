@@ -1,0 +1,11 @@
+# Same device with API encryption on but no key: it advertises `api_encryption_supported` and is given its key at
+# pairing, over a Noise session with the well-known all-zeros PSK (modelled on ESPHome's api_zero_psk_provisioning).
+packages:
+  base: !include virtual.yaml
+
+esphome:
+  name: test_node_keyless
+
+api:
+  port: 6056
+  encryption: {}

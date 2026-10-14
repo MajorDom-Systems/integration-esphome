@@ -78,7 +78,13 @@ sensor, number, select, button, cover (position), fan (on/off), climate (mode, t
 Every other entity the library knows (lock, valve, text, alarm panel, update, ...) is mapped generically from
 the library's own types (see below); cameras and events are skipped.
 - **Credentials needed to pair:** the API encryption key (type `secret`) if the node has one
-configured; otherwise none.
+configured in its YAML; otherwise none.
+- **Encryption keys:** a node with `api: encryption:` but no `key:` (it announces `api_encryption_supported`) is given a
+key of the integration's own at pairing: generated, stored on the device record, then set with
+`noise_encryption_set_key` over a Noise session with the well-known all-zeros PSK (in plaintext on firmware that does
+not announce `api_provisioning=zero-psk`). From then on the node accepts only that key, so the user never types one;
+the key is stored before it is set, so a failed attempt (or a Hub restart in between) does not lock the Hub out. A node
+without `encryption:` still pairs in plaintext, with a warning in the log to turn encryption on.
 
 ### Required harness
 
@@ -113,7 +119,7 @@ closure is called in `stop`
 the matching `self.dependencies.output.controller_did_*_discovery`
 - [x] Paired devices reconnect when the Hub restarts (`controller_did_connect_device` is called)
 - [x] `start_pairing_window`: not needed, mDNS discovery is always on (SDK default is a no-op)
-- [x] Device pairing, including the encryption key (`CredentialsType.secret`)
+- [x] Device pairing, including the encryption key (`CredentialsType.secret`), and a generated key for keyless nodes
 - [x] Device schema is mapped from the entities the device reports: parameters, units, limits and
 valid values
 - [x] Hub → Device control (`send_command`)
@@ -140,7 +146,8 @@ cleared on recovery; a rejected encryption key is reported as such
 (`device_uuid`, `parameter_uuid`) from the node's MAC address and the entity's `object_id`
 - [x] **End-to-end tests** drive discovery (over a stubbed zeroconf, never the real network) → pair → state → command →
 fetch → restart → outage → `unpair` against a virtual device, with and without encryption
-- [x] **Failure paths tested**: unreachable device, wrong or missing key, unsupported credentials,
+- [x] **Failure paths tested**: unreachable device, wrong or missing key, a key the node refuses, a node unreachable
+after it took its key, unsupported credentials,
 command on a read-only parameter, out-of-range values, offline device
 - [x] **Broad device coverage**: the entities above by hand, every other entity generically (tested with a lock, valve, text, date and alarm panel)
 - [x] **Readable & structured**: conversion logic in a mapper, models separated

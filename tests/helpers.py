@@ -122,11 +122,13 @@ def leaked_tasks() -> list[asyncio.Task[Any]]:
     return leaked
 
 
-async def assert_not_paired(deps: AbstractController.Dependencies, device_id: UUID) -> None:
-    """A failed pairing leaves the device as the Hub created it: no parameters, no connection data."""
+async def assert_not_paired(deps: AbstractController.Dependencies, device_id: UUID, kept_key: bool = False) -> None:
+    """A failed pairing leaves the device as the Hub created it: no parameters, no connection data, except (`kept_key`)
+    the key the integration already set on the node, kept so the node is not locked out of the next attempt."""
     async with deps.make_device_repository() as repo:
         device = await repo.get(device_id, as_=ESPhomeDevice)
     assert device is not None, "the device the Hub created must not be deleted by the integration"
     assert device.parameters == []
-    assert device.integration_data == ESPhomeDeviceIntegrationData()
+    assert bool(device.integration_data.encryption_key) == kept_key
+    assert device.integration_data.model_copy(update={"encryption_key": None}) == ESPhomeDeviceIntegrationData()
     assert not device.available

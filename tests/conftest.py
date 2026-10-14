@@ -37,7 +37,7 @@ _BUILD_ERRORS: dict[str, str | None] = {}
 def pytest_collection_finish(session: pytest.Session) -> None:
     """Build the virtual devices before the first test that needs one, outside any test timeout."""
     if any(
-        {"device", "encrypted_device", "extras_device"} & set(getattr(item, "fixturenames", ()))
+        {"device", "encrypted_device", "extras_device", "keyless_device"} & set(getattr(item, "fixturenames", ()))
         for item in session.items
     ):
         for sketch in SKETCHES:

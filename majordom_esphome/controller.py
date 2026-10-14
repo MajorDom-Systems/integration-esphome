@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
+import secrets
 from collections.abc import Coroutine
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
-from aioesphomeapi import EntityInfo, EntityState
+from aioesphomeapi import ZERO_NOISE_PSK, EntityInfo, EntityState
 from majordom_integration_sdk.controller import AbstractController
 from majordom_integration_sdk.discovery.zeroconf_discovery import ZeroconfDiscoveryInfo, ZeroconfDiscoveryService
 from majordom_integration_sdk.schemas import (
@@ -41,6 +43,8 @@ class _DiscoveryData:
     mac: str | None
     node_name: str
     mdns_name: str
+    keyless: bool  # encryption is on but no key is set: the integration gives the node one at pairing
+    zero_psk: bool  # the keyless node takes its key over the zero PSK (older firmware: only in plaintext)
 
 
 class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
@@ -122,7 +126,8 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
                 await self._refresh_addresses(device_id, addresses)
                 return
             port = service_info.port or 6053
-            encrypted = "api_encryption" in properties  # a key is configured (else `..._supported`)
+            # a key is configured: the user's, unless it is one this integration gave the node in an earlier attempt
+            needs_key = "api_encryption" in properties and await self._kept_key(device_id) is None
 
             discovery = Discovery(
                 id=device_id,
@@ -132,9 +137,13 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
                 device_name=properties.get("friendly_name") or node_name,
                 device_category=None,  # a node may host anything
                 device_icon=None,
-                expected_credentials_options=[CredentialsType.secret if encrypted else CredentialsType.none],
+                expected_credentials_options=[CredentialsType.secret if needs_key else CredentialsType.none],
             )
-            self._discovery_data[device_id] = _DiscoveryData(addresses, port, mac, node_name, service_info.name)
+            keyless = "api_encryption_supported" in properties
+            zero_psk = properties.get("api_provisioning") == "zero-psk"
+            self._discovery_data[device_id] = _DiscoveryData(
+                addresses, port, mac, node_name, service_info.name, keyless, zero_psk
+            )
             self._discovery_names[service_info.name] = device_id
             known = self._discoveries.get(device_id)
             if known == discovery:
@@ -165,29 +174,27 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
         if refreshed == known:
             return
         logger.info("Addresses of %s changed: %s -> %s", device_id, known, refreshed)
-        await self._save_addresses(device_id, refreshed)
+        await self._save_integration_data(device_id, addresses=refreshed)
         if connection := self._connections.get(device_id):
             connection.addresses = refreshed
 
-    async def _save_addresses(self, device_id: UUID, addresses: list[str]) -> None:
+    async def _save_integration_data(self, device_id: UUID, **changes: Any) -> None:
         async with self.dependencies.make_device_repository() as repo:
             device = await repo.get(device_id, as_=ESPhomeDevice)
             if device is not None:
-                data = device.integration_data.model_copy(update={"addresses": addresses})
+                data = device.integration_data.model_copy(update=changes)
                 await repo.save(device.model_copy(update={"integration_data": data}))
 
     async def _load_paired_devices(self) -> None:
         async with self.dependencies.make_device_repository() as repo:
             devices = await repo.get_all(ESPhomeDevice)
         for device in devices:
-            self._paired.add(device.id)
-            self._connect(device)
+            if device.integration_data.addresses:  # else the Hub created it, but its pairing never completed
+                self._paired.add(device.id)
+                self._connect(device)
 
     def _connect(self, device: ESPhomeDevice) -> None:
         data = device.integration_data
-        if not data.addresses:
-            logger.error("Device %s has no address, skipping", device.id)
-            return
         connection = self._make_connection(device.id, data.addresses, data.port, data.encryption_key)
         self._connections[device.id] = connection
         self._spawn(connection.start())
@@ -222,7 +229,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
 
     async def _on_addresses(self, device_id: UUID, addresses: list[str]) -> None:
         if device_id in self._connections:  # not while pairing: the device is saved with the final order
-            await self._save_addresses(device_id, addresses)
+            await self._save_integration_data(device_id, addresses=addresses)
 
     async def _update_device(self, device_id: UUID, **changes: Any) -> ESPhomeDevice | None:
         async with self.dependencies.make_device_repository() as repo:
@@ -233,6 +240,19 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
                 device = device.model_copy(update=changes)
                 await repo.save(device)
             return device
+
+    async def _kept_key(self, device_id: UUID) -> str | None:
+        device = await self._update_device(device_id)
+        return device.integration_data.encryption_key if device is not None else None
+
+    async def _provision_key(self, conn: ESPhomeDeviceConnection, data: _DiscoveryData, key: str | None) -> str:
+        """Give a keyless node a key of our own (or the one kept from an earlier attempt). It is kept before it is
+        set: from then on the node accepts nothing else, so losing it would lock the Hub out until a factory reset."""
+        key = key or base64.b64encode(secrets.token_bytes(32)).decode()
+        await self._save_integration_data(conn.device_id, encryption_key=key)
+        await conn.provision_key(key, ZERO_NOISE_PSK if data.zero_psk else None)
+        data.keyless = False  # whatever mDNS still announces, the node requires the key now
+        return key
 
     async def _on_state(self, device_id: UUID, entity: EntityInfo, state: EntityState) -> None:
         if device_id not in self._connections:  # still pairing, or already unpaired: the Hub does not know the device
@@ -313,10 +333,25 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
             encryption_key = credentials.value if credentials and credentials_type == CredentialsType.secret else None
             if credentials_type == CredentialsType.secret and not encryption_key:
                 raise ValueError("The encryption key is required for this device")
+            async with self.dependencies.make_device_repository() as repo:
+                hub_device = await repo.get(
+                    discovery.id, as_=ESPhomeDevice
+                )  # the Hub creates the device before pairing
+            if hub_device is None:
+                raise LookupError("The Hub has not created a device for this discovery")
+
+            encryption_key = encryption_key or hub_device.integration_data.encryption_key
 
             conn = self._make_connection(
                 discovery.id, integration_data.addresses, integration_data.port, encryption_key
             )
+            if integration_data.keyless:
+                encryption_key = await self._provision_key(conn, integration_data, encryption_key)
+            elif encryption_key is None:
+                logger.warning(
+                    "%s accepts unencrypted API connections only: add `api: encryption:` to its YAML",
+                    discovery.device_name,
+                )
             await conn.start()
             await conn.wait_ready()
 
@@ -328,12 +363,6 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
             ]
             main = next((p.id for p in parameters if p.can_be_main_parameter and p.role == "control"), None)
 
-            async with self.dependencies.make_device_repository() as repo:
-                hub_device = await repo.get(
-                    discovery.id, as_=ESPhomeDevice
-                )  # the Hub creates the device before pairing
-            if hub_device is None:
-                raise LookupError("The Hub has not created a device for this discovery")
             device = hub_device.model_copy(
                 update={
                     "parameters": parameters,

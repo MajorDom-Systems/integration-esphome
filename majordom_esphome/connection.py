@@ -15,6 +15,16 @@ from aioesphomeapi import (
 
 logger = logging.getLogger(__name__)
 
+
+class _HideKeySetting(logging.Filter):
+    """The library logs every message it sends at DEBUG: never let the one carrying a new key through."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return "NoiseEncryptionSetKeyRequest" not in record.getMessage()
+
+
+logging.getLogger("aioesphomeapi.connection").addFilter(_HideKeySetting())
+
 ADDRESS_TIMEOUT = 3.0  # seconds, per address: a dead address must not delay the next one
 WAIT_READY_TIMEOUT = 30.0
 RECONNECT_DELAY_FIRST = 1.0
@@ -25,8 +35,14 @@ AvailabilityCallback = Callable[[UUID, bool, str | None], Awaitable[None]]  # (d
 AddressesCallback = Callable[[UUID, list[str]], Awaitable[None]]
 
 
+class KeyRefusedError(ConnectionError):
+    """A keyless node did not take the encryption key it was given."""
+
+
 def describe_error(exc: BaseException) -> str:
     """Plain-language reason for the user; the technical detail stays in the logs."""
+    if isinstance(exc, KeyRefusedError):
+        return "The device refused the new encryption key"
     if isinstance(exc, RequiresEncryptionAPIError):
         return "The device requires an encryption key"
     if isinstance(exc, InvalidEncryptionKeyAPIError):
@@ -101,6 +117,43 @@ class ESPhomeDeviceConnection:
         if self.last_error is not None:
             raise ConnectionError(describe_error(self.last_error)) from self.last_error
         raise TimeoutError("The device did not respond in time")
+
+    async def provision_key(self, key: str, session_psk: str | None) -> None:
+        """Give a keyless node its key over a short-lived session (`session_psk`: the zero PSK, or None for plaintext on
+        older firmware). The node stores it and accepts only connections with it from then on."""
+        error: Exception = ConnectionError("The device has no address")
+        for address in self.addresses:
+            try:
+                accepted = await self._set_key_at(address, key, session_psk)
+            except Exception as exc:
+                logger.info("Device %s is not reachable at %s: %r", self.device_id, address, exc)
+                error = exc
+                continue
+            if not accepted:
+                raise KeyRefusedError(f"Device {self.device_id} refused the encryption key")
+            self.encryption_key = key
+            return
+        raise error
+
+    async def _set_key_at(self, address: str, key: str, session_psk: str | None) -> bool:
+        dropped = asyncio.Event()
+
+        async def on_stop(expected_disconnect: bool) -> None:
+            dropped.set()
+
+        client = APIClient(address, self.port, None, noise_psk=session_psk)
+        try:
+            async with asyncio.timeout(ADDRESS_TIMEOUT):
+                await client.connect(login=True, on_stop=on_stop)
+                accepted = await client.noise_encryption_set_key(key.encode())
+            if accepted:  # the node switches to the key a moment later, then drops every session: connecting
+                with contextlib.suppress(TimeoutError):  # before that would still meet the old (zero) PSK
+                    async with asyncio.timeout(ADDRESS_TIMEOUT):
+                        await dropped.wait()
+            return accepted
+        finally:
+            with contextlib.suppress(Exception):
+                await client.disconnect()
 
     def get_entities(self) -> dict[int, EntityInfo]:
         return self._entities.copy()

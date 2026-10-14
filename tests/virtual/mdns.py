@@ -26,7 +26,9 @@ class Advert:
     server: str | None = "localhost."  # a real node announces `<name>.local.`
     addresses: list[str] = field(default_factory=lambda: ["127.0.0.1"])
     port: int = 6053
-    encrypted: bool = False
+    encrypted: bool = False  # a key is configured
+    keyless: bool = False  # encryption is on but no key is set yet: the key is given at pairing
+    zero_psk: bool = True  # a keyless node takes its key over the zero PSK (older firmware: only in plaintext)
     friendly_name: str | None = None
 
     @property
@@ -40,7 +42,12 @@ class Advert:
             properties[b"mac"] = self.mac.encode()
         if self.friendly_name:
             properties[b"friendly_name"] = self.friendly_name.encode()
-        properties[b"api_encryption" if self.encrypted else b"api_encryption_supported"] = NOISE_PROTOCOL.encode()
+        if self.encrypted:
+            properties[b"api_encryption"] = NOISE_PROTOCOL.encode()
+        elif self.keyless:
+            properties[b"api_encryption_supported"] = NOISE_PROTOCOL.encode()
+            if self.zero_psk:
+                properties[b"api_provisioning"] = b"zero-psk"
         return properties
 
 
