@@ -17,15 +17,16 @@ from majordom_integration_sdk import MissingCredentialsError, Platform
 from majordom_integration_sdk.capabilities import GattCharacteristic, GattService
 from majordom_integration_sdk.peripherals import Peripherals
 from majordom_integration_sdk.runtime.peripherals.providers.ble.router import BLEService
-from majordom_integration_sdk.schemas import CredentialsType
+from majordom_integration_sdk.schemas import CredentialsType, ProvidedCredentials
 from majordom_integration_sdk.schemas.device import Discovery
 from majordom_integration_sdk.testing import FakeBLESource, RecordingControllerOutput
 
 from majordom_esphome import controller as controller_module
-from majordom_esphome import improv, thread_provisioning
+from majordom_esphome import improv, setup_code, thread_provisioning
 from majordom_esphome.controller import ESPhomeController
 from majordom_esphome.models import ESPhomeDevice
 from majordom_esphome.thread_provisioning import (
+    CAPABILITIES_UUID,
     ERROR_UUID,
     RESULT_UUID,
     RPC_UUID,
@@ -34,7 +35,15 @@ from majordom_esphome.thread_provisioning import (
     Error,
     State,
 )
-from tests.helpers import FakeEncryptedLink, assert_not_paired, hub_pairs, leaked_tasks, user_picks, wait_until
+from tests.helpers import (
+    FakeEncryptedLink,
+    FakeVerifier,
+    assert_not_paired,
+    hub_pairs,
+    leaked_tasks,
+    user_picks,
+    wait_until,
+)
 from tests.virtual.mdns import Advert, FakeMDNS
 from tests.virtual.runner import KEYLESS, VirtualDevice
 
@@ -50,7 +59,7 @@ DATASET = (
     f"0510{NETWORK_KEY}"
     "030a4d616a6f72446f6d31"  # network name
 )
-HANDLES = {uuid: 0x21 + i for i, uuid in enumerate((STATE_UUID, ERROR_UUID, RPC_UUID, RESULT_UUID))}
+HANDLES = {uuid: 0x21 + i for i, uuid in enumerate((STATE_UUID, ERROR_UUID, RPC_UUID, RESULT_UUID, CAPABILITIES_UUID))}
 
 
 class FakeThreadNode(FakeEncryptedLink):
@@ -65,6 +74,7 @@ class FakeThreadNode(FakeEncryptedLink):
         self.writes: list[bytes] = []
         self.received: list[str] = []  # datasets, hex
         self.on_attached: Callable[[], Awaitable[None]] | None = None  # it shows up on the network
+        self.verifier: FakeVerifier | None = None  # built with a setup code: the dataset only sealed by it
         self._incoming = b""
         self._callbacks: dict[int, Callable[[bytes], None]] = {}
 
@@ -83,6 +93,8 @@ class FakeThreadNode(FakeEncryptedLink):
         return [GattService(SERVICE_UUID, 0x20, characteristics)]
 
     async def read(self, handle: int) -> bytes:
+        if handle == HANDLES[CAPABILITIES_UUID]:
+            return bytes([setup_code.CAPABILITY if self.verifier else 0])
         return bytes([self.state if handle == HANDLES[STATE_UUID] else Error.NONE])
 
     async def write(self, handle: int, data: bytes, is_response_needed: bool = True):
@@ -94,7 +106,19 @@ class FakeThreadNode(FakeEncryptedLink):
         if len(self._incoming) < 3 or len(self._incoming) < self._incoming[1] + 3:
             return  # more chunks to come
         frame, self._incoming = self._incoming, b""
-        assert frame[0] == thread_provisioning.SET_DATASET and sum(frame[:-1]) & 0xFF == frame[-1]
+        assert sum(frame[:-1]) & 0xFF == frame[-1]
+        if self.verifier:
+            result, error, inner = self.verifier.answer(frame[0], frame[2:-1])
+            if frame[0] == setup_code.COMMAND_CONFIRM and result:
+                await self.press_button()
+            if error is not None:
+                self._notify(ERROR_UUID, error)
+            if result is not None:
+                self._callbacks[HANDLES[RESULT_UUID]](result)
+            if inner is None:
+                return
+            frame = inner + bytes([sum(inner) & 0xFF])
+        assert frame[0] == thread_provisioning.SET_DATASET
         asyncio.get_running_loop().create_task(self._attach(frame[2:-1].hex()))
 
     async def start_notify(self, handle: int, callback: Callable[[bytes], None]):
@@ -120,7 +144,8 @@ class FakeThreadNode(FakeEncryptedLink):
         self.state = State.ATTACHED
         self._notify(STATE_UUID, self.state)
         if callback := self._callbacks.get(HANDLES[RESULT_UUID]):
-            callback(bytes([thread_provisioning.SET_DATASET, 0, thread_provisioning.SET_DATASET]))
+            result = bytes([thread_provisioning.SET_DATASET, 0])
+            callback(self.verifier.seal(result) if self.verifier else result + bytes([sum(result)]))
         if self.on_attached is not None:
             await self.on_attached()
 
@@ -198,7 +223,8 @@ async def test_a_node_waiting_for_a_thread_network_is_discovered_by_its_name(
 
     (discovery,) = output.received_discoveries
     assert (discovery.transport, discovery.device_name) == ("ble", node.name)
-    assert discovery.expected_credentials_options == [CredentialsType.none], "the Hub gives it its own network"
+    # the Hub gives it its own network; its setup code, if printed on it, is known only once connected
+    assert discovery.expected_credentials_options == [CredentialsType.code, CredentialsType.none]
 
 
 async def test_pairing_gives_the_node_the_hubs_thread_network_then_pairs_it_with_a_key_of_its_own(
@@ -386,3 +412,19 @@ async def test_an_unencrypted_link_is_used_only_when_allowed_for_legacy_firmware
 
     assert node.received == [DATASET] and node.unencrypted_writes
     assert "unencrypted" in caplog.text
+
+
+async def test_with_a_setup_code_the_dataset_crosses_sealed_by_it(
+    controller: ESPhomeController,
+    ble_discovery: Discovery,
+    node: FakeThreadNode,
+    mdns: FakeMDNS,
+    keyless_device: VirtualDevice,
+):
+    node.verifier, node.state = FakeVerifier(), State.AWAITING_AUTHORIZATION
+    attaches_as_keyless_device(node, mdns)
+
+    await controller.pair_device(ble_discovery, ProvidedCredentials(type=CredentialsType.code, value="2020-2021"))
+
+    assert node.received == [DATASET]
+    assert bytes.fromhex(NETWORK_KEY) not in b"".join(node.writes), "the network key crossed in clear text"

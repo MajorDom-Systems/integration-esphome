@@ -29,16 +29,17 @@ from majordom_integration_sdk import DeviceIdTakenError, MissingCredentialsError
 from majordom_integration_sdk.capabilities import BLE_ROUTER, BLEDiscoveryInfo, GattCharacteristic, GattService
 from majordom_integration_sdk.peripherals import PeripheralChange, Peripherals
 from majordom_integration_sdk.runtime.peripherals.providers.ble.router import BLEService
-from majordom_integration_sdk.schemas import CredentialsType
+from majordom_integration_sdk.schemas import CredentialsType, ProvidedCredentials
 from majordom_integration_sdk.schemas.device import Discovery
 from majordom_integration_sdk.testing import FakeBLESource, RecordingControllerOutput
 
 from majordom_esphome import controller as controller_module
-from majordom_esphome import improv
+from majordom_esphome import improv, setup_code
 from majordom_esphome.controller import ESPhomeController
 from majordom_esphome.models import ESPhomeDevice
 from tests.helpers import (
     FakeEncryptedLink,
+    FakeVerifier,
     assert_not_paired,
     hub_pairs,
     leaked_tasks,
@@ -72,6 +73,8 @@ class FakeImprovNode(FakeEncryptedLink):
         self.fails_with: Error | None = None
         self.received: list[WifiCredentials] = []
         self.on_joined: Callable[[], Awaitable[None]] | None = None  # it shows up on the network
+        self.verifier: FakeVerifier | None = None  # built with a setup code: credentials only sealed by it
+        self.writes: list[bytes] = []  # as they crossed the air
         self._callbacks: dict[int, Callable[[bytes], None]] = {}
 
     def advertisement(self, named: bool = True) -> AdvertisementData:
@@ -99,7 +102,10 @@ class FakeImprovNode(FakeEncryptedLink):
         self._notify(CHARACTERISTIC_UUID_STATE, self.state)
 
     def _service_data(self) -> bytes:
-        return bytes([self.state, 0, 0, 0, 0, 0])
+        return bytes([self.state, self._capabilities(), 0, 0, 0, 0])
+
+    def _capabilities(self) -> int:
+        return setup_code.CAPABILITY if self.verifier else 0
 
     # BLEConnection
 
@@ -112,16 +118,31 @@ class FakeImprovNode(FakeEncryptedLink):
         return [GattService(SERVICE_UUID, 0x10, characteristics)]
 
     async def read(self, handle: int) -> bytes:
-        values = {HANDLES[CHARACTERISTIC_UUID_STATE]: self.state, HANDLES[CHARACTERISTIC_UUID_CAPABILITIES]: 0}
+        values = {
+            HANDLES[CHARACTERISTIC_UUID_STATE]: self.state,
+            HANDLES[CHARACTERISTIC_UUID_CAPABILITIES]: self._capabilities(),
+        }
         return bytes([values.get(handle, Error.NO_ERROR)])
 
     async def write(self, handle: int, data: bytes, is_response_needed: bool = True):
         assert handle == HANDLES[CHARACTERISTIC_UUID_RPC_COMMAND]
         self.check_encrypted(data)
+        self.writes.append(data)
+        sealed = False
+        if self.verifier and data[0] in range(setup_code.COMMAND_BEGIN, setup_code.COMMAND_ENCRYPTED + 1):
+            result, error, inner = self.verifier.answer(data[0], data[2:-1])
+            if data[0] == setup_code.COMMAND_CONFIRM and result:
+                await self.press_button()  # authorized by the code, for this session
+            if error is not None:
+                self._notify(CHARACTERISTIC_UUID_ERROR, error)
+            if result is not None:
+                self._callbacks[HANDLES[CHARACTERISTIC_UUID_RPC_RESULT]](result)
+            if inner is None:
+                return
+            data, sealed = inner + bytes([sum(inner) & 0xFF]), True
         command = WiFiSettingsCmd.from_bytes(data)
-        asyncio.get_running_loop().create_task(
-            self._join(WifiCredentials(command.ssid.decode(), command.password.decode()))
-        )
+        wifi = WifiCredentials(command.ssid.decode(), command.password.decode())
+        asyncio.get_running_loop().create_task(self._join(wifi, sealed))
 
     async def start_notify(self, handle: int, callback: Callable[[bytes], None]):
         self._callbacks[handle] = callback
@@ -132,8 +153,8 @@ class FakeImprovNode(FakeEncryptedLink):
     async def disconnect(self):
         self._callbacks.clear()
 
-    async def _join(self, wifi: WifiCredentials):
-        if self.state == State.AUTHORIZATION_REQUIRED:
+    async def _join(self, wifi: WifiCredentials, sealed: bool = False):
+        if self.state == State.AUTHORIZATION_REQUIRED or (self.verifier and not sealed):
             self._notify(CHARACTERISTIC_UUID_ERROR, Error.NOT_AUTHORIZED)
             return
         self.received.append(wifi)
@@ -147,7 +168,8 @@ class FakeImprovNode(FakeEncryptedLink):
         self.state = State.PROVISIONED
         self._notify(CHARACTERISTIC_UUID_STATE, self.state)
         if callback := self._callbacks.get(HANDLES[CHARACTERISTIC_UUID_RPC_RESULT]):
-            callback(WiFiSettingsRes(b"http://127.0.0.1", []).as_bytes())
+            result = WiFiSettingsRes(b"http://127.0.0.1", []).as_bytes()
+            callback(self.verifier.seal(result[:-1]) if self.verifier and sealed else result)
         if self.on_joined is not None:
             await self.on_joined()
 
@@ -726,3 +748,60 @@ async def test_no_radio_that_can_pair_fails_with_a_clear_reason_and_sends_nothin
 
     assert node.received == [] and node.unencrypted_writes == []
     assert "encrypt" in (await last_error(output, ble_discovery)).lower()
+
+
+# Setup code: the Hub proves the code printed on the node (SPAKE2+), and the Wi-Fi password crosses sealed by it
+
+
+SETUP_CODE = ProvidedCredentials(type=CredentialsType.code, value="2020-2021")
+
+
+@pytest_asyncio.fixture
+async def coded_discovery(controller: ESPhomeController, node: FakeImprovNode, radio: FakeBLESource) -> Discovery:
+    node.verifier, node.state = FakeVerifier(), State.AUTHORIZATION_REQUIRED
+    await node.advertise(radio)
+    (found,) = controller.discoveries.values()
+    await hub_creates_device(controller.platform, found)
+    return found
+
+
+async def test_a_node_with_a_setup_code_asks_for_it(coded_discovery: Discovery):
+    assert coded_discovery.expected_credentials_options == [CredentialsType.code, CredentialsType.none]
+
+
+async def test_the_setup_code_authorizes_the_hub_and_seals_the_wifi_password(
+    controller: ESPhomeController,
+    coded_discovery: Discovery,
+    node: FakeImprovNode,
+    mdns: FakeMDNS,
+    keyless_device: VirtualDevice,
+):
+    joins_as_keyless_device(node, mdns)
+
+    assert await controller.pair_device(coded_discovery, SETUP_CODE) == controller.device_uuid(KEYLESS.mac)
+
+    assert node.received == [HOME]
+    assert not any(HOME.password.encode() in write for write in node.writes), "the password crossed in clear text"
+    assert node.unencrypted_writes == [], "the link is still encrypted underneath"
+
+
+async def test_a_wrong_setup_code_fails_closed_with_a_clear_reason(
+    controller: ESPhomeController, coded_discovery: Discovery, node: FakeImprovNode, output: RecordingControllerOutput
+):
+    with pytest.raises(improv.SetupError):
+        await controller.pair_device(coded_discovery, ProvidedCredentials(type=CredentialsType.code, value="20202022"))
+
+    assert node.received == []
+    assert [write[0] for write in node.writes] == [setup_code.COMMAND_BEGIN, setup_code.COMMAND_SHARE]
+    assert "setup code is wrong" in (await last_error(output, coded_discovery)).lower()
+    await assert_not_paired(controller.platform, coded_discovery.id)
+
+
+async def test_a_setup_code_for_a_node_without_one_sends_nothing(
+    controller: ESPhomeController, ble_discovery: Discovery, node: FakeImprovNode, output: RecordingControllerOutput
+):
+    with pytest.raises(improv.SetupError):
+        await controller.pair_device(ble_discovery, SETUP_CODE)
+
+    assert node.received == [] and node.writes == []
+    assert "no setup code" in (await last_error(output, ble_discovery)).lower()

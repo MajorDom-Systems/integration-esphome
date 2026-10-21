@@ -4,6 +4,7 @@ by whichever radio hears it best: the Hub's own adapter or another ESPHome node 
 
 A node built with `esp32_improv` (`improv_ble` from ESPHome 2026.11) and no Wi-Fi networks advertises the Improv
 service; it is given the Hub's Wi-Fi over BLE, joins the LAN and then announces itself over mDNS like any other node.
+A node with a setup code (our `esp32_improv`, Improv revision 2.5) says so in its advert: see `setup_code`.
 """
 
 import asyncio
@@ -11,11 +12,13 @@ import contextlib
 from collections.abc import AsyncGenerator, Awaitable, Callable
 
 from aioesphomeapi import APIConnectionError
+from bleak.backends.scanner import AdvertisementData
 from bleak.exc import BleakError
-from improv_ble_client import SERVICE_UUID, Error, State
+from improv_ble_client import SERVICE_DATA_UUID, SERVICE_UUID, Error, State
 from improv_ble_client import device_filter as waits_for_wifi
 from improv_ble_client.errors import ImprovError
 from improv_ble_client.protocol import (
+    CHARACTERISTIC_UUID_CAPABILITIES,
     CHARACTERISTIC_UUID_ERROR,
     CHARACTERISTIC_UUID_RPC_COMMAND,
     CHARACTERISTIC_UUID_RPC_RESULT,
@@ -33,10 +36,15 @@ from majordom_integration_sdk.capabilities import (
     SecureChannel,
 )
 
+from . import setup_code
+from .setup_code import RpcService, SetupCodeError
+
 __all__ = [
     "SERVICE_UUID",
+    "RPC_SERVICE",
     "EncryptionError",
     "SetupError",
+    "has_setup_code",
     "is_node",
     "provision",
     "secured_connection",
@@ -50,6 +58,13 @@ CONNECT_TIMEOUT = 30.0  # for the node to answer: one just reset or flashed take
 BLE_NAME_LENGTH = 20  # ESPHome cuts the name it advertises to this, keeping a `-xxxxxx` MAC suffix
 OWNER = "esphome-improv"
 NOTIFYING = (CHARACTERISTIC_UUID_STATE, CHARACTERISTIC_UUID_ERROR, CHARACTERISTIC_UUID_RPC_RESULT)
+RPC_SERVICE = RpcService(
+    SERVICE_UUID,
+    CHARACTERISTIC_UUID_RPC_COMMAND,
+    CHARACTERISTIC_UUID_RPC_RESULT,
+    CHARACTERISTIC_UUID_ERROR,
+    CHARACTERISTIC_UUID_CAPABILITIES,
+)
 
 PRESS_BUTTON = "Press the button on the device to let the Hub set it up"
 NO_ANSWER = "The device did not answer over Bluetooth: move it closer to the Hub"
@@ -87,12 +102,20 @@ async def secured_connection(
             yield secured
     except BLEPairingError as exc:
         raise EncryptionError(NOT_ENCRYPTED) from exc
+    except SetupCodeError as exc:
+        raise SetupError(str(exc)) from exc
     except BLEBusyError as exc:
         raise SetupError(BUSY) from exc
     # BleakError and APIConnectionError: what a local adapter's and an ESPHome node's connections raise, until the SDK
     # normalises them
     except (ConnectionError, TimeoutError, LookupError, ValueError, ImprovError, BleakError, APIConnectionError) as exc:
         raise SetupError(NO_ANSWER) from exc
+
+
+def has_setup_code(advertisement: AdvertisementData) -> bool:
+    """Whether the node's advert offers setup code authentication (capability bit 4 of its service data)."""
+    service_data = advertisement.service_data.get(SERVICE_DATA_UUID, b"")
+    return len(service_data) > 1 and bool(service_data[1] & setup_code.CAPABILITY)
 
 
 def is_node(ble_name: str, node_name: str) -> bool:
@@ -140,13 +163,13 @@ async def _provision(
     async with asyncio.timeout(PROVISION_TIMEOUT):
         while True:
             uuid, data = await events.get()
-            if uuid == CHARACTERISTIC_UUID_ERROR and (error := Error(data[0])) != Error.NO_ERROR:
-                raise SetupError(_describe(error, ssid))
+            if uuid == CHARACTERISTIC_UUID_ERROR and data[0] != Error.NO_ERROR:
+                raise SetupError(_describe(data[0], ssid))
             if uuid == CHARACTERISTIC_UUID_RPC_RESULT and isinstance(parse_result(data), WiFiSettingsRes):
                 return
 
 
-def _describe(error: Error, ssid: str) -> str:
+def _describe(error: int, ssid: str) -> str:
     if error == Error.UNABLE_TO_CONNECT:
         return f"The device could not join the Wi-Fi network {ssid}: check that it is a 2.4 GHz network in range"
     if error == Error.NOT_AUTHORIZED:

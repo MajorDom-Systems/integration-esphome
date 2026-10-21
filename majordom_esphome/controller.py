@@ -56,6 +56,7 @@ from .models import (
     ESPhomeParameterIntegrationData,
     ParameterSpec,
 )
+from .setup_code import RpcService, SetupCode
 
 logger = logging.getLogger(__name__)
 
@@ -221,7 +222,8 @@ class ESPhomeController(
     ) -> ESPhomeDeviceState:
         run = self._run
         if discovery.id in self._improv_nodes:
-            return await self._pair_over_ble(discovery, draft, run)
+            code = credentials.value if credentials and credentials.type == CredentialsType.code else None
+            return await self._pair_over_ble(discovery, draft, code, run)
         return await self._pair_over_api(discovery, draft, credentials, run)
 
     async def unpair(self, device: ESPhomeDevice | ESPhomeDeviceState):
@@ -431,7 +433,11 @@ class ESPhomeController(
                 device_name=name,
                 device_category=None,
                 device_icon=None,
-                expected_credentials_options=[CredentialsType.none],  # the Hub gives it its own network
+                # the Hub gives it its own network; a setup code, if it has one, proves the Hub is the one meant to (a
+                # Thread node's advert can't say whether it has one)
+                expected_credentials_options=[CredentialsType.code, CredentialsType.none]
+                if thread or improv.has_setup_code(info.advertisement)
+                else [CredentialsType.none],
             )
             self._discoveries[device_id] = discovery
             await self.output.controller_did_receive_discovery(self, discovery)
@@ -670,7 +676,7 @@ class ESPhomeController(
     # Private: pairing
 
     async def _pair_over_ble(
-        self, discovery: Discovery, draft: ESPhomeDeviceState, run: object | None
+        self, discovery: Discovery, draft: ESPhomeDeviceState, code: str | None, run: object | None
     ) -> ESPhomeDeviceState:
         """Give the node the Hub's Wi-Fi or Thread network, wait for it on the network, then pair it like any other
         node. The device takes the node's own identity (from its MAC), which is what it is found by from then on."""
@@ -680,7 +686,7 @@ class ESPhomeController(
             network = self._thread_dataset() if node.thread else self._wifi_credentials()
             if (router := self._router) is None:
                 raise LookupError("The Hub has no Bluetooth to set the device up with")
-            setup = self._spawn(self._join_network(router, node, network, discovery.id))  # stop() ends it at once
+            setup = self._spawn(self._join_network(router, node, network, code, discovery.id))  # stop() ends it at once
             try:
                 on_network = await setup
             except asyncio.CancelledError:
@@ -712,7 +718,12 @@ class ESPhomeController(
         return draft
 
     async def _join_network(
-        self, router: BLERouter, node: _ImprovNode, network: WifiCredentials | bytes, discovery_id: UUID
+        self,
+        router: BLERouter,
+        node: _ImprovNode,
+        network: WifiCredentials | bytes,
+        code: str | None,
+        discovery_id: UUID,
     ) -> Discovery:
         """Give the node the Hub's Wi-Fi over Improv, or its Thread dataset, then wait for it on the network: its mDNS
         discovery."""
@@ -728,7 +739,8 @@ class ESPhomeController(
                 provision = functools.partial(
                     improv.provision, router, node.address, network.ssid, network.password, on_authorization_required
                 )
-            await self._provision_securely(provision)
+            service = thread_provisioning.RPC_SERVICE if node.thread else improv.RPC_SERVICE
+            await self._provision_securely(provision, code, service)
             async with asyncio.timeout(NODE_APPEAR_TIMEOUT):
                 return await joined
         except TimeoutError:
@@ -736,16 +748,22 @@ class ESPhomeController(
         finally:
             self._joining.pop(node.name, None)
 
-    async def _provision_securely(self, provision: Callable[[SecureChannel], Awaitable[None]]):
+    async def _provision_securely(
+        self, provision: Callable[[SecureChannel], Awaitable[None]], code: str | None, service: RpcService
+    ):
         """Credentials cross only an encrypted link; an unencrypted one only if the user allowed it, for firmware or
-        radios that can't pair."""
+        radios that can't pair. With a setup code they cross sealed by it on top; a failed handshake fails closed."""
+
+        def secured(link: SecureChannel) -> SecureChannel:
+            return SetupCode(code, service, link) if code else link
+
         try:
-            await provision(LESecureConnections())
+            await provision(secured(LESecureConnections()))
         except improv.EncryptionError:
             if not self.settings.is_unencrypted_provisioning_allowed:
                 raise
             logger.warning("No encrypted Bluetooth link to the device: sending its credentials unencrypted, as allowed")
-            await provision(Unsecured())
+            await provision(secured(Unsecured()))
 
     def _wifi_credentials(self) -> WifiCredentials:
         if (wifi := self.platform.wifi) is None:
