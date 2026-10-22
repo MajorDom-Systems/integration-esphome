@@ -162,7 +162,9 @@ def node(monkeypatch: pytest.MonkeyPatch) -> FakeImprovNode:
 
 async def advertise(controller: ESPhomeController, info: BLEDiscoveryInfo) -> None:
     """What the SDK's BLE scanner does with an advert: it reaches the listeners registered for its services."""
-    await controller.dependencies.ble_discovery_service._handle_advertisement(info.device, info.advertisement)
+    await controller.dependencies.ble_discovery_service._handle_advertisement(
+        info.source, info.device, info.advertisement
+    )
 
 
 @pytest_asyncio.fixture
