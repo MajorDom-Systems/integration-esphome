@@ -321,16 +321,11 @@ def build_command_args(
         case ESPhomeComponentType.NUMBER, "state":
             args["state"] = _as_number(value, parameter)
         case ESPhomeComponentType.SELECT, "state":
-            options = parameter.valid_values or {}
-            if value not in options:
-                raise ValueError(f"{parameter.name}: no option {value!r}")
-            args["state"] = options[value]
+            args["state"] = (parameter.valid_values or {})[generic.enum_key(parameter, value)]
         case ESPhomeComponentType.BUTTON, "state":
             pass
         case ESPhomeComponentType.CLIMATE, "mode":
-            if value not in (parameter.valid_values or {}):
-                raise ValueError(f"{parameter.name}: unsupported mode {value!r}")
-            args["mode"] = ClimateMode(value)
+            args["mode"] = ClimateMode(generic.enum_key(parameter, value))
         case ESPhomeComponentType.CLIMATE, str() as target if target.startswith("target_temperature"):
             args[target] = _as_number(value, parameter)
         case _:  # a field the hand-written mapping does not cover: the generic one does

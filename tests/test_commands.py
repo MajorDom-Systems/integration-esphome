@@ -80,6 +80,12 @@ async def test_select_is_set_by_option_index(controller: ESPhomeController, pair
     await wait_for_value(output, param(paired, "Mode"), lambda v: v == 1)
 
 
+async def test_select_is_set_by_option_name(controller: ESPhomeController, paired: ESPhomeDevice, output):
+    await command(controller, paired, "Mode", "state", "MANUAL")
+
+    await wait_for_value(output, param(paired, "Mode"), lambda v: v == 1)
+
+
 async def test_button_is_pressed(controller: ESPhomeController, paired: ESPhomeDevice, device: VirtualDevice):
     await command(controller, paired, "Reboot", "state", None)
 
@@ -95,11 +101,19 @@ async def test_climate_mode_and_targets_are_set(controller: ESPhomeController, p
     await wait_for_value(output, param(paired, "HVAC", "target_temperature_low"), lambda v: v == 19.0)
 
 
+async def test_climate_mode_is_set_by_name(controller: ESPhomeController, paired: ESPhomeDevice, output):
+    await command(controller, paired, "HVAC", "mode", "HEAT")
+
+    await wait_for_value(output, param(paired, "HVAC", "mode"), lambda v: v == 3)
+
+
 @pytest.mark.parametrize(
     ("entity", "sub_field", "value"),
     [
         ("Temperature", "state", 5.0),  # sensors are read-only
         ("Mode", "state", 7),  # no such option
+        ("Mode", "state", "BOOST"),  # no such option name
+        ("Mode", "state", True),  # not an option index, although it equals 1
         ("Target Temp", "state", 99.0),  # outside the device's 10..30
         ("Virtual Light", "brightness", 150),  # a percentage
         ("RGB Light", "color_hue", 400),  # degrees

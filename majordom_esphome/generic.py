@@ -432,6 +432,22 @@ def as_number(value: Any, parameter: ESPhomeParameter) -> float:
     return number
 
 
+def enum_key(parameter: ESPhomeParameter, value: Any) -> int:
+    """The `valid_values` key a command value names: the key (also as a numeric string, as JSON may carry it) or its
+    label, the option or member name. A string is a label first: an option named "2" is that option, not the third.
+    """
+    options = parameter.valid_values or {}
+    if isinstance(value, str):
+        labels = {label: key for key, label in options.items()}
+        if value in labels:
+            return labels[value]
+        value = int(value) if value.isdecimal() else value
+    # True equals 1, yet names no option
+    if isinstance(value, bool) or not isinstance(value, int | float) or value not in options:
+        raise ValueError(f"{parameter.name}: no option {value!r}")
+    return int(value)
+
+
 def command_args(
     component: str, parameter: ESPhomeParameter, value: Any, settings: Mapping[str, Any] | None = None
 ) -> dict[str, Any]:
@@ -494,13 +510,9 @@ def _to_device(component: str, field: Field, parameter: ESPhomeParameter, value:
     if field.is_flag:
         return True
     if (component, field.name) in OPTIONS:
-        if value not in (parameter.valid_values or {}):
-            raise ValueError(f"{parameter.name}: no option {value!r}")
-        return (parameter.valid_values or {})[value]
+        return (parameter.valid_values or {})[enum_key(parameter, value)]
     if issubclass(field.kind, IntEnum):
-        if value not in (parameter.valid_values or {}):
-            raise ValueError(f"{parameter.name}: no option {value!r}")
-        return field.kind(value)
+        return field.kind(enum_key(parameter, value))
     if field.kind is bool:
         return as_bool(value)
     if field.kind is float:

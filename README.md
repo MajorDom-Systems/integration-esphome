@@ -54,10 +54,8 @@ binaries are built on first use and need the ESPHome CLI:
 pipx install esphome && poetry run python -m tests.virtual.build
 ```
 
-Host nodes have no BLE, so the Improv tests run the real client against a scripted Improv GATT service. The
-end-to-end run on real hardware (an ESP32-C3 in the lab cage, a Wi-Fi AP, BLE on the Hub) is
-`tests/hardware/run_hardware.sh`, with the sketch next to it; it carries the Hub's `hardware_iot_device` marker
-and is deselected everywhere else.
+Host nodes have no BLE, so the Improv tests run the real client against a scripted Improv GATT service. End-to-end
+tests on real hardware are kept in a private repository.
 
 ## Run it standalone (without the Hub)
 
@@ -168,7 +166,7 @@ command on a read-only parameter, out-of-range values, offline device
 - [x] **Diagnosable**: connection failures and unexpected errors are logged with their cause
 - [x] **Parameter metadata**: `visibility` follows the entity category, and `main_parameter` is a
 one-tap toggle
-- [ ] **Owned**: a listed maintainer who keeps it working as ESPHome and the library evolve
+- [x] **Owned**: maintained by Parker Industries, who keep it working as ESPHome and the library evolve
 
 ### Parameter mapping
 
@@ -188,7 +186,7 @@ defaults:
 
 Brightness, positions and saturation are percentages (0–100, ESPHome reports 0–1); colour is hue in degrees
 plus saturation, the model the Matter and Zigbee integrations use, converted from ESPHome's RGB. Enums are
-integers with string labels in `valid_values`, labelled by the ESPHome enum names. Units come from the
+integers with string labels in `valid_values`, labelled by the ESPHome enum names. A command may give an enum value as its key or its label (the option or member name). Units come from the
 entity's own unit string, else from its device class. Entities in the
 `config` / `diagnostic` category are `setting`, and entities disabled by default are `system`.
 
