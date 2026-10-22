@@ -14,6 +14,7 @@ from uuid import UUID
 from aioesphomeapi import ZERO_NOISE_PSK, EntityInfo, EntityState
 from bleak.backends.device import BLEDevice
 from bleak.backends.scanner import AdvertisementData
+from majordom_integration_sdk import MissingCredentialsError
 from majordom_integration_sdk.controller import AbstractController
 from majordom_integration_sdk.discovery.ble_discovery import BLEDiscoveryInfo, BLEDiscoveryService
 from majordom_integration_sdk.discovery.zeroconf_discovery import ZeroconfDiscoveryInfo, ZeroconfDiscoveryService
@@ -153,8 +154,14 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
                 await self._refresh_addresses(device_id, addresses)
                 return
             port = service_info.port or 6053
-            # a key is configured: the user's, unless it is one this integration gave the node in an earlier attempt
-            needs_key = "api_encryption" in properties and await self._kept_key(device_id) is None
+            # a key is configured: the user's, unless it is one this integration gave the node in an earlier attempt.
+            # Even then the user may enter one: the node may have been reflashed with a key of its own since.
+            if "api_encryption" not in properties:
+                credentials_options = [CredentialsType.none]
+            elif await self._kept_key(device_id) is None:
+                credentials_options = [CredentialsType.secret]
+            else:
+                credentials_options = [CredentialsType.none, CredentialsType.secret]
 
             discovery = Discovery(
                 id=device_id,
@@ -164,7 +171,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
                 device_name=properties.get("friendly_name") or node_name,
                 device_category=None,  # a node may host anything
                 device_icon=None,
-                expected_credentials_options=[CredentialsType.secret if needs_key else CredentialsType.none],
+                expected_credentials_options=credentials_options,
             )
             keyless = "api_encryption_supported" in properties
             zero_psk = properties.get("api_provisioning") == "zero-psk"
@@ -423,6 +430,8 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
             async with self.dependencies.make_device_repository() as repo:
                 await repo.save(hub_device.model_copy(update={"id": on_network.id}), previous_id=discovery.id)
             await self._pair_over_api(on_network, credentials=None)
+        except MissingCredentialsError:
+            raise  # the Hub returns it to the app's pairing request
         except Exception as exc:
             logger.exception("Setting up %s over BLE failed", discovery.device_name)
             reason = str(exc) if isinstance(exc, ValueError | LookupError | TimeoutError | improv.SetupError) else None
@@ -441,7 +450,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
         )
         credentials = await provider() if provider is not None else None
         if credentials is None:
-            raise ValueError("The Hub is not connected to Wi-Fi, so it has no network to give the device")
+            raise MissingCredentialsError(MissingCredentialsError.WIFI)
         return credentials
 
     async def _report_error(self, discovery_id: UUID, reason: str) -> None:

@@ -21,7 +21,7 @@ from aioesphomeapi import (
     EntityInfo,
     InvalidEncryptionKeyAPIError,
 )
-from majordom_integration_sdk.schemas import CredentialsType
+from majordom_integration_sdk.schemas import CredentialsType, ProvidedCredentials
 from majordom_integration_sdk.schemas.device import Discovery
 from majordom_integration_sdk.testing import RecordingControllerOutput
 
@@ -33,6 +33,7 @@ from tests.virtual.runner import KEYLESS, VirtualDevice
 
 pytestmark = pytest.mark.timeout(60)
 
+NEW_KEY = base64.b64encode(bytes(range(32))).decode()  # set in the YAML of a reflashed node
 KEYLESS_ADVERT = Advert(name=KEYLESS.name, mac=KEYLESS.mac, port=KEYLESS.port, keyless=True)
 
 
@@ -253,9 +254,9 @@ async def test_a_key_set_before_a_failed_reconnect_is_kept_for_the_retry_even_ac
     await restarted.start()
     try:
         node.reachable_with_key = True
-        # the node now announces a key: it is ours, so the user must not be asked for one
+        # the node now announces a key: most likely ours, so the user need not type one (but may: see below)
         again = await discover(restarted, mdns, Advert(encrypted=True))
-        assert again.expected_credentials_options == [CredentialsType.none]
+        assert again.expected_credentials_options == [CredentialsType.none, CredentialsType.secret]
 
         await restarted.pair_device(again, credentials=None)
 
@@ -282,3 +283,30 @@ async def test_a_retry_before_the_node_announces_its_key_does_not_set_it_again(
 
     assert node.set_key_sessions == [ZERO_NOISE_PSK]
     assert (await stored(controller, found.id)).integration_data.encryption_key == node.key
+
+
+async def test_a_node_reflashed_with_a_key_of_its_own_after_the_hub_kept_one_can_be_paired_with_the_new_key(
+    controller: ESPhomeController, mdns: FakeMDNS, node: FakeNode, output: RecordingControllerOutput
+):
+    """Paired with the Hub's key, unpaired (the Hub keeps the device record, and so the key), then reflashed with a key
+    in its YAML: the kept key is refused, so the user must be able to enter the new one."""
+    found = await discover(controller, mdns, Advert(keyless=True))
+    await hub_creates_device(controller.dependencies, found)
+    await controller.pair_device(found, credentials=None)
+    kept = (await stored(controller, found.id)).integration_data.encryption_key
+    await controller.unpair(await stored(controller, found.id))
+    node.key = NEW_KEY
+
+    again = await discover(controller, mdns, Advert(encrypted=True))
+
+    assert again.expected_credentials_options == [CredentialsType.none, CredentialsType.secret]
+    with pytest.raises(ConnectionError):  # the kept key is the wrong one now
+        await controller.pair_device(again, credentials=None)
+    assert "key" in (output.updated_discoveries[-1].last_error or "").lower()
+    await controller.pair_device(
+        controller.discoveries[again.id], ProvidedCredentials(type=CredentialsType.secret, value=NEW_KEY)
+    )
+    device = await stored(controller, found.id)
+    assert device.integration_data.encryption_key == NEW_KEY != kept
+    assert (device.available, device.last_error) == (True, None)
+    assert node.set_key_sessions == [ZERO_NOISE_PSK], "a node with a key of its own is not given ours"
