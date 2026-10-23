@@ -124,10 +124,10 @@ Two checklists. An item is ticked only when a test in `tests/` proves it.
 
 **Implementation** — makes the integration functional:
 
-- [x] Discovery service registered via `self.dependencies.zeroconf_discovery_service`; the cancel
+- [x] Discovery service registered via `self.peripherals.instance("mdns")` (DNS-SD); the cancel
 closure is called in `stop`
 - [x] Discovery listener methods fire when nodes appear, change and leave, and the controller calls
-the matching `self.dependencies.output.controller_did_*_discovery`
+the matching `self.platform.output.controller_did_*_discovery`
 - [x] Paired devices reconnect when the Hub restarts (`controller_did_connect_device` is called)
 - [x] `start_pairing_window`: not needed, mDNS and BLE discovery are always on (SDK default is a no-op)
 - [x] Device pairing, including the encryption key (`CredentialsType.secret`), and a generated key for keyless nodes
