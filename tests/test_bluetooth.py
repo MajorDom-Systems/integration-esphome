@@ -1,4 +1,4 @@
-"""ESPHome nodes lending their Bluetooth as sources of the hub's BLEService."""
+"""ESPHome nodes lending their Bluetooth as sources of the hub's Bluetooth router."""
 
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -21,10 +21,12 @@ from aioesphomeapi.model import (
     BluetoothGATTService,
     ESPHomeBluetoothGATTServices,
 )
-from majordom_integration_sdk.controller import AbstractController
-from majordom_integration_sdk.discovery import BLEService
+from majordom_integration_sdk import Endpoint
+from majordom_integration_sdk.controller import Platform
+from majordom_integration_sdk.peripherals import Peripherals
+from majordom_integration_sdk.runtime.peripherals.providers.ble.router import BLEService
 from majordom_integration_sdk.schemas.device import Discovery
-from majordom_integration_sdk.testing import RecordingControllerOutput
+from majordom_integration_sdk.testing import FakeOffers, RecordingControllerOutput
 
 from majordom_esphome.bluetooth import ESPhomeBLESource, ble_source_of
 from majordom_esphome.controller import ESPhomeController
@@ -64,6 +66,8 @@ class FakeAPIClient:
         self.writes: list[tuple[int, bytes]] = []
         self.descriptors: list[tuple[int, bytes]] = []
         self.on_notify = None
+        self.on_slots: Callable[[int, int, list[int]], None] | None = None
+        self.unsubscribed = 0
 
     async def device_info(self):
         if self.device_info_error:
@@ -75,8 +79,17 @@ class FakeAPIClient:
 
         def unsubscribe():
             self.on_advertisements = None
+            self.unsubscribed += 1
             if self.unsubscribe_error:
                 raise self.unsubscribe_error
+
+        return unsubscribe
+
+    def subscribe_bluetooth_connections_free(self, callback):
+        self.on_slots = callback
+
+        def unsubscribe():
+            self.on_slots = None
 
         return unsubscribe
 
@@ -221,6 +234,55 @@ async def test_a_leased_node_stays_subscribed_but_mutes_its_advertisements(ble_a
     assert listener.heard[-1].advertisement.local_name == "Bulb"  # heard again, the muted name kept
 
 
+async def test_a_lease_mutes_a_lent_node_and_resumes_it_without_unsubscribing():
+    """A node lent through its offer, as the runtime binds it: a lease pauses it (it stays subscribed, or it would
+    refuse the leaseholder's connect) and the release resumes it."""
+    ble = BLEService()
+    await ble.start()
+    client = FakeAPIClient()
+    source = await source_of(client)
+    assert source
+    await FakeOffers(ble).offer(Endpoint("ble", "esphome-proxy", source.name, instance=source))
+    listener = Listener()
+    ble.register(listener, {UUID(MATTER)})
+    client.advertise(MATTER_ADV)
+    await asyncio.sleep(0.01)
+    subscribed = client.on_advertisements
+
+    async with ble.exclusive("AA:BB:CC:DD:EE:FF", owner="matter") as lease:
+        assert lease.source == source.name
+        client.advertise(MATTER_ADV, rssi=-30)
+        await asyncio.sleep(0.01)
+        assert len(listener.heard) == 1  # muted
+        assert client.on_advertisements is subscribed
+    client.advertise(NAME)
+    await asyncio.sleep(0.01)
+    assert len(listener.heard) == 2  # resumed
+    assert client.on_advertisements is subscribed and client.unsubscribed == 0
+    await ble.stop()
+
+
+async def test_a_node_says_how_many_connections_it_can_still_open(ble_and_node):
+    _, client = ble_and_node
+    source = await source_of(client)
+    assert source
+    await source.start(lambda device, adv: None)
+    assert source.free_slots is None  # until the node says
+    assert client.on_slots
+    client.on_slots(1, 3, [0xAABBCCDDEEFF, 0x112233445566])
+    assert source.free_slots == 1
+    await source.stop()
+    assert client.on_slots is None
+
+
+async def test_a_node_that_only_listens_has_no_slots_to_report():
+    client = FakeAPIClient(features=BluetoothProxyFeature.PASSIVE_SCAN | BluetoothProxyFeature.RAW_ADVERTISEMENTS)
+    source = await source_of(client)
+    assert source
+    await source.start(lambda device, adv: None)
+    assert client.on_slots is None
+
+
 async def test_rotating_addresses_dont_grow_the_memory(ble_and_node, monkeypatch):
     ble, client = ble_and_node
     monkeypatch.setattr("majordom_esphome.bluetooth._REMEMBERED", 2)
@@ -273,13 +335,18 @@ def nodes(monkeypatch: pytest.MonkeyPatch) -> Nodes:
 
 
 @pytest.fixture
-def hub(deps: AbstractController.Dependencies, ble: BLEService, nodes: Nodes) -> AbstractController.Dependencies:
-    return deps.copy(ble_discovery_service=ble)
+def hub(deps: Platform, ble: BLEService, nodes: Nodes) -> Platform:
+    return deps.copy(offers=FakeOffers(ble))
 
 
 @pytest.fixture
-async def esphome(hub: AbstractController.Dependencies) -> AsyncIterator[ESPhomeController]:
-    controller = ESPhomeController(hub)
+def peripherals(peripherals: Peripherals, ble: BLEService) -> Peripherals:
+    return Peripherals(peripherals | {"ble": ble.endpoint})
+
+
+@pytest.fixture
+async def esphome(hub: Platform, peripherals: Peripherals) -> AsyncIterator[ESPhomeController]:
+    controller = ESPhomeController(hub, peripherals)
     await controller.start()
     yield controller
     await controller.stop()
@@ -293,9 +360,9 @@ async def announce(controller: ESPhomeController, mdns: FakeMDNS, node: str) -> 
 
 async def pair(controller: ESPhomeController, mdns: FakeMDNS, node: str) -> ESPhomeDevice:
     discovery = await announce(controller, mdns, node)
-    await hub_creates_device(controller.dependencies, discovery, name=node)
+    await hub_creates_device(controller.platform, discovery, name=node)
     await controller.pair_device(discovery, None)
-    async with controller.dependencies.make_device_repository() as repo:
+    async with controller.platform.make_device_repository() as repo:
         device = await repo.get(discovery.id, as_=ESPhomeDevice)
     assert device is not None
     return device
@@ -326,8 +393,8 @@ async def test_a_node_without_a_proxy_lends_nothing(esphome, mdns, nodes, ble):
     assert sources(ble) == []
 
 
-async def test_nothing_is_lent_while_the_setting_is_off(hub, mdns, nodes, ble):
-    controller = ESPhomeController(hub.copy(settings=ESPhomeSettings(bluetooth_proxies=False)))
+async def test_nothing_is_lent_while_the_setting_is_off(hub, peripherals, mdns, nodes, ble):
+    controller = ESPhomeController(hub.copy(settings=ESPhomeSettings(bluetooth_proxies=False)), peripherals)
     await controller.start()
     try:
         await pair(controller, mdns, "kitchen")
@@ -373,7 +440,7 @@ async def test_stop_takes_back_every_radio(esphome, mdns, nodes, ble):
     assert leaked_tasks() == []
 
 
-async def test_a_restarted_controller_lends_each_node_once(esphome, hub, mdns, nodes, ble):
+async def test_a_restarted_controller_lends_each_node_once(esphome, hub, peripherals, mdns, nodes, ble):
     listener = Listener()
     ble.register(listener, {UUID(MATTER)})
     await pair(esphome, mdns, "kitchen")
@@ -381,7 +448,7 @@ async def test_a_restarted_controller_lends_each_node_once(esphome, hub, mdns, n
     first = nodes.connection_of("kitchen")
     await esphome.stop()
 
-    restarted = ESPhomeController(hub)
+    restarted = ESPhomeController(hub, peripherals)
     await restarted.start()
     try:
         await wait_until(lambda: sources(ble) == [lent("kitchen")], message="the node to be lent again")
@@ -399,7 +466,7 @@ async def test_a_failed_pairing_leaves_no_radio_lent(
     esphome, mdns, nodes, ble, output: RecordingControllerOutput, monkeypatch
 ):
     discovery = await announce(esphome, mdns, "kitchen")
-    await hub_creates_device(esphome.dependencies, discovery, name="kitchen")
+    await hub_creates_device(esphome.platform, discovery, name="kitchen")
     # the pairing fails after connecting, once the node is lent
     monkeypatch.setattr(
         output, "controller_did_connect_device", AsyncMock(side_effect=RuntimeError("the Hub went away"))

@@ -7,11 +7,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import pytest_asyncio
 from aioesphomeapi import EntityInfo
-from majordom_integration_sdk.controller import AbstractController
-from majordom_integration_sdk.discovery.zeroconf_discovery import ZeroconfDiscoveryService
+from majordom_integration_sdk.controller import Platform
+from majordom_integration_sdk.peripherals import Peripherals
+from majordom_integration_sdk.runtime.peripherals.providers.dns_sd import ZeroconfDiscoveryService
 from majordom_integration_sdk.schemas.device import Discovery
 from majordom_integration_sdk.schemas.parameter import ParameterRole
-from majordom_integration_sdk.testing import RecordingControllerOutput, build_test_dependencies
+from majordom_integration_sdk.testing import RecordingControllerOutput, build_test_platform
 
 from majordom_esphome.controller import ESPhomeController
 from majordom_esphome.models import ESPhomeDevice
@@ -54,24 +55,34 @@ def mdns() -> Iterator[FakeMDNS]:
         yield fake
 
 
+@pytest.fixture
+def deps() -> Platform:
+    return build_test_platform()
+
+
 @pytest_asyncio.fixture
-async def deps(mdns: FakeMDNS) -> AsyncIterator[AbstractController.Dependencies]:
-    """Test dependencies with the SDK's real zeroconf discovery service, running over the stubbed zeroconf."""
+async def dns_sd(mdns: FakeMDNS) -> AsyncIterator[ZeroconfDiscoveryService]:
+    """The SDK's real DNS-SD provider, running over the stubbed zeroconf."""
     service = ZeroconfDiscoveryService()
     await service.start()
-    yield build_test_dependencies().copy(zeroconf_discovery_service=service)
+    yield service
     await service.stop()
 
 
 @pytest.fixture
-def output(deps: AbstractController.Dependencies) -> RecordingControllerOutput:
+def peripherals(dns_sd: ZeroconfDiscoveryService) -> Peripherals:
+    return Peripherals({"mdns": dns_sd.endpoint})
+
+
+@pytest.fixture
+def output(deps: Platform) -> RecordingControllerOutput:
     assert isinstance(deps.output, RecordingControllerOutput)
     return deps.output
 
 
 @pytest_asyncio.fixture
-async def controller(deps: AbstractController.Dependencies) -> AsyncIterator[ESPhomeController]:
-    ctrl = ESPhomeController(deps)
+async def controller(deps: Platform, peripherals: Peripherals) -> AsyncIterator[ESPhomeController]:
+    ctrl = ESPhomeController(deps, peripherals)
     await ctrl.start()
     yield ctrl
     await ctrl.stop()
@@ -122,7 +133,7 @@ async def discovery(controller: ESPhomeController, mdns: FakeMDNS, device: Virtu
     """The plain virtual device, discovered over mDNS and picked by the user (so the Hub has created the device)."""
     await mdns.announce(Advert(port=device.port))
     (found,) = controller.discoveries.values()
-    await hub_creates_device(controller.dependencies, found)
+    await hub_creates_device(controller.platform, found)
     return found
 
 
@@ -130,7 +141,7 @@ async def discovery(controller: ESPhomeController, mdns: FakeMDNS, device: Virtu
 async def paired(controller: ESPhomeController, discovery: Discovery) -> ESPhomeDevice:
     """The plain virtual device, paired and connected."""
     await controller.pair_device(discovery, credentials=None)
-    async with controller.dependencies.make_device_repository() as repo:
+    async with controller.platform.make_device_repository() as repo:
         stored = await repo.get(discovery.id, as_=ESPhomeDevice)
     assert stored is not None
     return stored

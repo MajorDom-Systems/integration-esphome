@@ -16,13 +16,13 @@ from tests.virtual.runner import VirtualDevice
 async def pair(controller: ESPhomeController, mdns: FakeMDNS, advert: Advert) -> ESPhomeDevice:
     await mdns.announce(advert)
     (discovery,) = controller.discoveries.values()
-    await hub_creates_device(controller.dependencies, discovery)
+    await hub_creates_device(controller.platform, discovery)
     await controller.pair_device(discovery, credentials=None)
     return await stored(controller, discovery.id)
 
 
 async def stored(controller: ESPhomeController, device_id) -> ESPhomeDevice:
-    async with controller.dependencies.make_device_repository() as repo:
+    async with controller.platform.make_device_repository() as repo:
         device = await repo.get(device_id, as_=ESPhomeDevice)
     assert device is not None
     return device
@@ -51,7 +51,7 @@ async def test_pairing_uses_the_latest_announcement(
     await mdns.announce(Advert(port=device.port, server=None, addresses=["127.0.0.1"]))  # DHCP moved it
 
     (discovery,) = controller.discoveries.values()
-    await hub_creates_device(controller.dependencies, discovery)
+    await hub_creates_device(controller.platform, discovery)
     await controller.pair_device(discovery, credentials=None)
 
     assert (await stored(controller, discovery.id)).integration_data.addresses == ["127.0.0.1"]

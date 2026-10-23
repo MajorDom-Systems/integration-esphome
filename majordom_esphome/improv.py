@@ -24,7 +24,7 @@ from improv_ble_client.protocol import (
     WiFiSettingsRes,
     parse_result,
 )
-from majordom_integration_sdk.discovery.ble_discovery import BLEBusyError, BLEConnection, BLEDiscoveryService
+from majordom_integration_sdk.capabilities import BLEBusyError, BLEConnection, BLERouter
 
 __all__ = ["SERVICE_UUID", "SetupError", "is_node", "provision", "waits_for_wifi"]
 
@@ -52,7 +52,7 @@ def is_node(ble_name: str, node_name: str) -> bool:
 
 
 async def provision(
-    ble: BLEDiscoveryService,
+    ble: BLERouter,
     address: str,
     ssid: str,
     password: str,

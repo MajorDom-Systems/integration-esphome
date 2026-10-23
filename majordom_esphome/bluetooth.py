@@ -18,8 +18,7 @@ from aioesphomeapi import (
 from bleak.backends.device import BLEDevice
 from bleak.backends.scanner import AdvertisementData
 from bluetooth_data_tools import int_to_bluetooth_address, parse_advertisement_data_bytes
-from majordom_integration_sdk.discovery import GattCharacteristic, GattService
-from majordom_integration_sdk.discovery.ble_discovery import OnAdvertisement
+from majordom_integration_sdk.capabilities import GattCharacteristic, GattService, OnAdvertisement
 
 _PROPERTIES = {0x02: "read", 0x04: "write-without-response", 0x08: "write", 0x10: "notify", 0x20: "indicate"}
 _CCCD = "00002902-0000-1000-8000-00805f9b34fb"
@@ -29,13 +28,15 @@ _REMEMBERED = 1024  # devices kept merged; phones rotate their address, so the o
 
 class ESPhomeBLESource:
     """An ESPHome node lends its Bluetooth radio to the hub: what it hears and the connections it makes become one
-    more source of the hub's `BLEService`."""
+    more source of the hub's Bluetooth router, offered to it as ``ble/esphome-proxy``."""
 
     def __init__(self, client: APIClient, name: str, features: BluetoothProxyFeature):
         self.name = f"esphome:{name}"
         self._client, self._features = client, features
         self._unsubscribe: Callable[[], None] | None = None
+        self._unsubscribe_slots: Callable[[], None] | None = None
         self._paused = False
+        self.free_slots: int | None = None  # connections it can still open, as the node last said
         self._heard: dict[str, tuple[AdvertisementData, int]] = {}  # address -> merged advertisement, address type
 
     async def start(self, on_advertisement: OnAdvertisement):
@@ -49,6 +50,11 @@ class ESPhomeBLESource:
                     on_advertisement(device, adv)
 
         self._unsubscribe = self._client.subscribe_bluetooth_le_raw_advertisements(on_advertisements)
+        if self._features & _CONNECTS == _CONNECTS:
+            self._unsubscribe_slots = self._client.subscribe_bluetooth_connections_free(self._on_slots)
+
+    def _on_slots(self, free: int, limit: int, allocated: list[int]):
+        self.free_slots = free
 
     def _merge(self, address: str, address_type: int, rssi: int, data: bytes) -> tuple[BLEDevice, AdvertisementData]:
         # packets and scan responses arrive apart; merged like BlueZ does, so they don't read as changes
@@ -66,10 +72,11 @@ class ESPhomeBLESource:
         return BLEDevice(address, name, {"source": self.name}), adv
 
     async def stop(self):
-        if unsubscribe := self._unsubscribe:
-            self._unsubscribe = None
-            with contextlib.suppress(APIConnectionError):
-                unsubscribe()
+        for unsubscribe in (self._unsubscribe, self._unsubscribe_slots):
+            if unsubscribe:
+                with contextlib.suppress(APIConnectionError):
+                    unsubscribe()
+        self._unsubscribe = self._unsubscribe_slots = None
 
     async def pause_scanning(self):
         # muted, not unsubscribed: the node answers connects only to its subscriber, and stops scanning itself

@@ -7,7 +7,7 @@ from dataclasses import dataclass, fields
 from typing import Any
 from uuid import UUID
 
-from majordom_integration_sdk.controller import AbstractController
+from majordom_integration_sdk.controller import Platform
 from majordom_integration_sdk.schemas import DeviceParameterChange
 from majordom_integration_sdk.schemas.device import Device, Discovery
 from majordom_integration_sdk.schemas.parameter import ParameterDataType
@@ -25,21 +25,19 @@ class WiFi:
 
 
 @dataclass(frozen=True)
-class HubDependencies(AbstractController.Dependencies):
-    """The SDK's dependencies plus the Hub's Wi-Fi (SDK branch feature/wifi-credentials, not released yet)."""
+class HubDependencies(Platform):
+    """The SDK's platform plus the Hub's Wi-Fi (SDK branch feature/wifi-credentials, not released yet)."""
 
     wifi_credentials: Callable[[], Awaitable[WiFi | None]] | None = None
 
 
-def with_wifi(
-    deps: AbstractController.Dependencies, wifi_credentials: Callable[[], Awaitable[WiFi | None]]
-) -> HubDependencies:
+def with_wifi(deps: Platform, wifi_credentials: Callable[[], Awaitable[WiFi | None]]) -> HubDependencies:
     sdk = {f.name: getattr(deps, f.name) for f in fields(deps) if f.name != "wifi_credentials"}  # SDKs that have it
     return HubDependencies(**sdk, wifi_credentials=wifi_credentials)
 
 
 async def hub_creates_device(
-    deps: AbstractController.Dependencies, discovery: Discovery, name: str = "Kitchen relay", room: UUID = ROOM
+    deps: Platform, discovery: Discovery, name: str = "Kitchen relay", room: UUID = ROOM
 ) -> None:
     """What the Hub does when the user picks a discovery: it creates the device (name, room) *before* asking the
     integration to pair (`DeviceProvider.create_device`). The integration completes that device."""
@@ -143,7 +141,7 @@ def leaked_tasks() -> list[asyncio.Task[Any]]:
     return leaked
 
 
-async def assert_not_paired(deps: AbstractController.Dependencies, device_id: UUID, kept_key: bool = False) -> None:
+async def assert_not_paired(deps: Platform, device_id: UUID, kept_key: bool = False) -> None:
     """A failed pairing leaves the device as the Hub created it: no parameters, no connection data, except (`kept_key`)
     the key the integration already set on the node, kept so the node is not locked out of the next attempt."""
     async with deps.make_device_repository() as repo:

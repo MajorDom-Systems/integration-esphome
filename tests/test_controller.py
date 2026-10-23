@@ -25,7 +25,7 @@ SWITCH_KEY = 7  # deliberately different from every other number in the tests
 async def mock_discovery(controller: ESPhomeController, mdns: FakeMDNS) -> Discovery:
     await mdns.announce(Advert())
     (found,) = controller.discoveries.values()
-    await hub_creates_device(controller.dependencies, found)
+    await hub_creates_device(controller.platform, found)
     return found
 
 
@@ -37,7 +37,7 @@ async def mock_paired(controller: ESPhomeController, mock_discovery: Discovery, 
         11: make_entity(LightInfo, 11, "Lamp", supported_color_modes=[3]),
     }
     await controller.pair_device(mock_discovery, credentials=None)
-    async with controller.dependencies.make_device_repository() as repo:
+    async with controller.platform.make_device_repository() as repo:
         stored = await repo.get(mock_discovery.id, as_=ESPhomeDevice)
     assert stored is not None
     return stored
@@ -69,7 +69,7 @@ async def test_pairing_skips_entities_it_cannot_map(
 
     await controller.pair_device(mock_discovery, credentials=None)
 
-    async with controller.dependencies.make_device_repository() as repo:
+    async with controller.platform.make_device_repository() as repo:
         stored = await repo.get(mock_discovery.id, as_=ESPhomeDevice)
     assert stored is not None
     assert {p.integration_data.entity_name for p in stored.parameters} == {"Relay"}
@@ -89,7 +89,7 @@ async def test_failed_pairing_is_cleaned_up_and_reported(
 
     connection.stop.assert_awaited_once()
     assert mock_discovery.id in controller.discoveries
-    await assert_not_paired(controller.dependencies, mock_discovery.id)
+    await assert_not_paired(controller.platform, mock_discovery.id)
     assert output.updated_discoveries[-1].last_error, "the user must see why pairing failed"
     assert output.connected_devices == []
 
@@ -118,7 +118,7 @@ async def test_command_to_disconnected_device_fails_visibly(
             DeviceCommand(device_id=mock_paired.id, parameter_id=relay.id, value=True), mock_paired, relay
         )
 
-    async with controller.dependencies.make_device_repository() as repo:
+    async with controller.platform.make_device_repository() as repo:
         stored = await repo.get(mock_paired.id, as_=ESPhomeDevice)
     assert stored is not None
     assert stored.last_error, "a failed command must leave a user-readable last_error on the device"
@@ -132,7 +132,7 @@ async def test_command_on_read_only_parameter_is_rejected(
     _, connection = mock_connection
     connection.get_entities.return_value = {3: make_entity(SensorInfo, 3, "Temperature")}
     await controller.pair_device(mock_discovery, credentials=None)
-    async with controller.dependencies.make_device_repository() as repo:
+    async with controller.platform.make_device_repository() as repo:
         stored = await repo.get(mock_discovery.id, as_=ESPhomeDevice)
     assert stored is not None
     temperature = param(stored, "Temperature")
@@ -173,3 +173,12 @@ async def test_fetch_of_unknown_device_raises(controller: ESPhomeController, moc
 
     with pytest.raises(ConnectionError):
         await controller.fetch(stranger)
+
+
+def test_it_needs_dns_sd_and_borrows_the_router_never_raw_bluetooth():
+    from majordom_integration_sdk import Endpoint
+
+    needs = {need.family: need for need in ESPhomeController.needs}
+    assert needs["mdns"].dialects == ["dns-sd"] and needs["mdns"].required
+    assert needs["ble"].accepts(Endpoint("ble", "router")) and not needs["ble"].required
+    assert not needs["ble"].accepts(Endpoint("ble", "bluez", "hci0"))
