@@ -6,6 +6,7 @@ keyless virtual node appears over mDNS.
 """
 
 import asyncio
+import dataclasses
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 
@@ -24,6 +25,7 @@ from improv_ble_client.protocol import (
     WiFiSettingsCmd,
     WiFiSettingsRes,
 )
+from majordom_integration_sdk import MissingCredentialsError
 from majordom_integration_sdk.controller import AbstractController
 from majordom_integration_sdk.discovery.ble_discovery import (
     BLEDiscoveryInfo,
@@ -448,16 +450,40 @@ async def test_a_hub_without_wifi_cannot_set_up_the_node(
     controller: ESPhomeController,
     ble_discovery: Discovery,
     node: FakeImprovNode,
-    output: RecordingControllerOutput,
     hub_wifi: list[WiFi | None],
 ):
+    """A Hub on Ethernet: told apart from any other failure, before the node is touched, so the app can ask for the
+    Wi-Fi the node should join (the Hub saves it for the next attempt). The Hub returns the error to the app's pairing
+    request, so the discovery's last_error is left as it was."""
     hub_wifi[0] = None
+    node.reachable = False  # any BLE step would fail with another error
 
-    with pytest.raises(ValueError):
+    with pytest.raises(MissingCredentialsError) as raised:
         await controller.pair_device(ble_discovery, credentials=None)
 
+    assert raised.value.type == MissingCredentialsError.WIFI
     assert node.received == []
-    assert "wi-fi" in (await last_error(output, ble_discovery)).lower()
+    assert controller.discoveries[ble_discovery.id].last_error is None
+    await assert_not_paired(controller.dependencies, ble_discovery.id)
+
+
+async def test_a_hub_whose_sdk_has_no_wifi_credentials_cannot_set_up_the_node_either(
+    deps: HubDependencies, node: FakeImprovNode, radio: FakeBLESource
+):
+    controller = ESPhomeController(dataclasses.replace(deps, wifi_credentials=None))
+    await controller.start()
+    try:
+        await node.advertise(radio)
+        (found,) = controller.discoveries.values()
+        await hub_creates_device(controller.dependencies, found)
+
+        with pytest.raises(MissingCredentialsError):
+            await controller.pair_device(found, credentials=None)
+
+        assert node.received == []
+        assert controller.discoveries[found.id].last_error is None
+    finally:
+        await controller.stop()
 
 
 async def test_the_reason_stays_on_the_discovery_while_the_node_keeps_advertising(
