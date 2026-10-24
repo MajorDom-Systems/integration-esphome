@@ -107,4 +107,4 @@ async def test_incomplete_announcement_never_raises(
 ):
     await mdns.announce(incomplete)  # must not break the SDK's discovery loop
 
-    assert output.errors == []
+    assert output.error_log == []
