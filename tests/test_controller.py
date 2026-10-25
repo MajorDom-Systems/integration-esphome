@@ -8,6 +8,7 @@ from uuid import UUID
 
 import pytest
 from aioesphomeapi import CameraInfo, LightInfo, SwitchInfo
+from majordom_integration_sdk import Endpoint, PeripheralChange
 from majordom_integration_sdk.controller import Platform
 from majordom_integration_sdk.schemas.command import DeviceCommand
 from majordom_integration_sdk.schemas.device import Discovery
@@ -178,8 +179,6 @@ async def test_fetch_of_unknown_device_raises(controller: ESPhomeController, moc
 
 
 def test_it_needs_zeroconf_and_borrows_the_router_never_raw_bluetooth():
-    from majordom_integration_sdk import Endpoint
-
     needs = {need.family: need for need in ESPhomeController.needs}
     assert needs["mdns"].dialects == ["zeroconf"] and needs["mdns"].is_required
     assert needs["ble"].accepts(Endpoint("ble", "router")) and not needs["ble"].is_required
@@ -191,3 +190,17 @@ def test_the_package_provides_its_controller_alone(deps: Platform):
 
     assert isinstance(controller, ESPhomeController) and controller.platform is deps
     assert controller.key == "esphome"
+
+
+async def test_a_border_router_coming_and_going_needs_no_restart(controller: ESPhomeController):
+    border_router = Endpoint("thread", "otbr-rest", "http://otbr:8081")
+
+    assert await controller.needed_peripheral_did_change(PeripheralChange("thread", None, border_router))
+    assert await controller.needed_peripheral_did_change(PeripheralChange("thread", border_router, None))
+
+
+async def test_another_zeroconf_restarts_it(controller: ESPhomeController):
+    zeroconf = controller.peripherals.endpoint("mdns")
+    moved = PeripheralChange("mdns", zeroconf, Endpoint("mdns", "zeroconf", "other", instance=zeroconf.instance))
+
+    assert not await controller.needed_peripheral_did_change(moved)

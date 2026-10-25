@@ -12,7 +12,7 @@ from typing import Any
 from uuid import UUID
 
 from aioesphomeapi import ZERO_NOISE_PSK, APIClient, EntityInfo, EntityState
-from majordom_integration_sdk import MissingCredentialsError, Need, WifiCredentials
+from majordom_integration_sdk import MissingCredentialsError, Need, PeripheralChange, WifiCredentials
 from majordom_integration_sdk.capabilities import BLEDiscoveryInfo, BLERouter, Zeroconf, ZeroconfDiscoveryInfo
 from majordom_integration_sdk.controller import AbstractController, Platform
 from majordom_integration_sdk.runtime import BLEProxy
@@ -116,13 +116,26 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
 
         zeroconf: Zeroconf = self.peripherals.instance("mdns")
         self._zeroconf_cancel = zeroconf.register(self, services={"_esphomelib._tcp.local."})
-        if router := self._router:
-            self._ble_cancel = router.register(self, {UUID(improv.SERVICE_UUID)})
+        self._listen_for_improv()
         await self._load_paired_devices()
+
+    async def needed_peripheral_did_change(self, change: PeripheralChange) -> bool:
+        """The router is followed in place, and a border router only carries the Thread devices to the hub: neither
+        restarts it. Another DNS-SD does."""
+        if change.family == "ble":
+            self._listen_for_improv()
+        return change.family in ("ble", "thread")
 
     @property
     def _router(self) -> BLERouter | None:
         return self.peripherals.instance("ble")
+
+    def _listen_for_improv(self):
+        """Hear unprovisioned nodes through the router bound now, if there is one."""
+        if self._ble_cancel:
+            self._ble_cancel()
+        router = self._router
+        self._ble_cancel = router.register(self, {UUID(improv.SERVICE_UUID)}) if router else None
 
     async def stop(self) -> None:
         logger.info("Stopping ESPHome integration")

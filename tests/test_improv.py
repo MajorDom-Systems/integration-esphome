@@ -27,7 +27,7 @@ from improv_ble_client.protocol import (
 from majordom_integration_sdk import MissingCredentialsError, WifiCredentials
 from majordom_integration_sdk.capabilities import BLEDiscoveryInfo, GattCharacteristic, GattService
 from majordom_integration_sdk.controller import Context, Platform
-from majordom_integration_sdk.peripherals import Peripherals
+from majordom_integration_sdk.peripherals import PeripheralChange, Peripherals
 from majordom_integration_sdk.runtime.peripherals.providers.ble.router import BLEService
 from majordom_integration_sdk.schemas import CredentialsType
 from majordom_integration_sdk.schemas.device import Discovery
@@ -272,6 +272,34 @@ async def test_ble_discovery_stops_with_the_controller(
     controller: ESPhomeController, node: FakeImprovNode, radio: FakeBLESource
 ):
     await controller.stop()
+
+    await node.advertise(radio)
+
+    assert controller.discoveries == {}
+
+
+async def test_a_router_handed_over_once_it_runs_is_listened_to_without_a_restart(
+    deps: Platform, peripherals: Peripherals, router: BLEService, node: FakeImprovNode, radio: FakeBLESource
+):
+    controller = ESPhomeController(deps)
+    controller.peripherals = Peripherals({"mdns": peripherals.endpoint("mdns")})
+    await controller.start()
+    try:
+        controller.peripherals = peripherals
+        assert await controller.needed_peripheral_did_change(PeripheralChange("ble", None, router.endpoint))
+
+        await node.advertise(radio)
+
+        assert len(controller.discoveries) == 1
+    finally:
+        await controller.stop()
+
+
+async def test_a_lost_router_is_let_go_without_a_restart(
+    controller: ESPhomeController, router: BLEService, node: FakeImprovNode, radio: FakeBLESource
+):
+    controller.peripherals = Peripherals({"mdns": controller.peripherals.endpoint("mdns")})
+    assert await controller.needed_peripheral_did_change(PeripheralChange("ble", router.endpoint, None))
 
     await node.advertise(radio)
 
