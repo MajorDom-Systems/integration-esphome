@@ -12,9 +12,10 @@ from typing import Any
 from uuid import UUID
 
 from aioesphomeapi import ZERO_NOISE_PSK, APIClient, EntityInfo, EntityState
-from majordom_integration_sdk import Endpoint, MissingCredentialsError, Need, WifiCredentials
+from majordom_integration_sdk import MissingCredentialsError, Need, WifiCredentials
 from majordom_integration_sdk.capabilities import BLEDiscoveryInfo, BLERouter, Zeroconf, ZeroconfDiscoveryInfo
 from majordom_integration_sdk.controller import AbstractController, Platform
+from majordom_integration_sdk.runtime import BLEProxy
 from majordom_integration_sdk.schemas import (
     CredentialsType,
     DeviceParameterChange,
@@ -26,7 +27,7 @@ from majordom_integration_sdk.schemas.parameter import ParameterVisibility
 from pydantic import BaseModel, Field
 
 from . import improv, mapper
-from .bluetooth import ESPhomeBLESource, ble_source_of
+from .bluetooth import ble_source_of
 from .connection import ESPhomeDeviceConnection, describe_error
 from .models import (
     ESPhomeDevice,
@@ -81,7 +82,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
     def __init__(self, platform: Platform, *, settings: ESPhomeController.Settings | None = None):
         super().__init__(platform, settings=settings)
         self._connections: dict[UUID, ESPhomeDeviceConnection] = {}
-        self._ble_sources: dict[UUID, ESPhomeBLESource] = {}  # the nodes lending their Bluetooth radio to the hub
+        self._proxies: dict[UUID, BLEProxy] = {}  # the nodes lending their Bluetooth radio to the hub
         self._discoveries: dict[UUID, Discovery] = {}
         self._discovery_data: dict[UUID, _DiscoveryData] = {}
         self._discovery_names: dict[str, UUID] = {}  # mDNS record name -> discovery id, for goodbyes
@@ -97,6 +98,10 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
     @property
     def discoveries(self) -> dict[UUID, Discovery]:
         return self._discoveries.copy()
+
+    @property
+    def provides(self) -> list[BLEProxy]:
+        return list(self._proxies.values())
 
     @property
     def device_type(self) -> type[ESPhomeDevice]:
@@ -135,7 +140,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
         for connection in list(self._connections.values()):
             await connection.stop()
         self._connections.clear()
-        for device_id in list(self._ble_sources):
+        for device_id in list(self._proxies):
             await self._on_client(device_id, None)
         self._states.clear()
         self._paired.clear()
@@ -322,11 +327,11 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
     async def _on_client(self, device_id: UUID, client: APIClient | None) -> None:
         """A node connected: lend its Bluetooth radio, if it has one to lend, as a ``ble/esphome-proxy`` the router
         takes. A node gone: take the radio back."""
-        if source := self._ble_sources.pop(device_id, None):
-            await self.platform.offers.withdraw(_lent(source))
+        if self._proxies.pop(device_id, None):
+            await self.runtime.peripheral_did_change_provided(self)
         if client is not None and (source := await ble_source_of(client)):
-            self._ble_sources[device_id] = source
-            await self.platform.offers.offer(_lent(source))
+            self._proxies[device_id] = BLEProxy(source)
+            await self.runtime.peripheral_did_change_provided(self)
 
     async def _on_addresses(self, device_id: UUID, addresses: list[str]) -> None:
         if device_id in self._connections:  # not while pairing: the device is saved with the final order
@@ -649,7 +654,3 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
             await self._update_device(device.id, last_error=f"{parameter.name} could not be set: device not connected")
             raise
         await self._update_device(device.id, last_error=None)
-
-
-def _lent(source: ESPhomeBLESource) -> Endpoint:
-    return Endpoint("ble", "esphome-proxy", source.name, instance=source)
