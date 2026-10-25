@@ -12,7 +12,7 @@ jobs:
     uses: ParkerIndustries/workflows/.github/workflows/release.yml@v1
     with:
       pypi-package-name: majordom-esphome
-      python-version: "3.12"
+      python-version: "3.13"
       stable-branch: master
       # the QA run builds the virtual ESPHome nodes; --prefer-binary: see test.yml
       setup-script: pipx install esphome --pip-args="--prefer-binary"

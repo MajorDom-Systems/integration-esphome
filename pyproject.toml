@@ -24,7 +24,7 @@ classifiers = [
     "Topic :: Home Automation",
     "Programming Language :: Python :: 3",
 ]
-requires-python = ">=3.12"
+requires-python = ">=3.13"
 dependencies = [
     "majordom-integration-sdk[ble] (>=0.3.0,<1.0)",  # a node's Bluetooth reaches the router in bleak's types
     "aioesphomeapi >=46.15.1",
@@ -35,7 +35,7 @@ dependencies = [
 ]
 
 [tool.poetry.dependencies]
-python = "^3.12"
+python = "^3.13"
 noiseprotocol = { version = ">=0.3.1,<1.0", python = ">=3.12" }
 
 [project.urls]
