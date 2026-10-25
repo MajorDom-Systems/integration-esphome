@@ -82,7 +82,8 @@ def output(deps: Platform) -> RecordingControllerOutput:
 
 @pytest_asyncio.fixture
 async def controller(deps: Platform, peripherals: Peripherals) -> AsyncIterator[ESPhomeController]:
-    ctrl = ESPhomeController(deps, peripherals)
+    ctrl = ESPhomeController(deps)
+    ctrl.peripherals = peripherals
     await ctrl.start()
     yield ctrl
     await ctrl.stop()
@@ -141,7 +142,7 @@ async def discovery(controller: ESPhomeController, mdns: FakeMDNS, device: Virtu
 async def paired(controller: ESPhomeController, discovery: Discovery) -> ESPhomeDevice:
     """The plain virtual device, paired and connected."""
     await controller.pair_device(discovery, credentials=None)
-    async with controller.platform.make_device_repository() as repo:
+    async with controller.device_repository() as repo:
         stored = await repo.get(discovery.id, as_=ESPhomeDevice)
     assert stored is not None
     return stored

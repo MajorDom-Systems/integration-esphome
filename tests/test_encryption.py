@@ -72,7 +72,7 @@ async def test_pairing_with_the_key_works_like_a_plain_device(
 ):
     await controller.pair_device(encrypted_discovery, secret(KEY))
 
-    async with controller.platform.make_device_repository() as repo:
+    async with controller.device_repository() as repo:
         stored = await repo.get(encrypted_discovery.id, as_=ESPhomeDevice)
     assert stored is not None
     assert len(stored.parameters) == 33
@@ -87,7 +87,8 @@ async def test_encrypted_device_reconnects_after_hub_restart(
     await controller.pair_device(encrypted_discovery, secret(KEY))
     await controller.stop()
     output.connected_devices.clear()
-    restarted = ESPhomeController(controller.platform, controller.peripherals)
+    restarted = ESPhomeController(controller.platform)
+    restarted.peripherals = controller.peripherals
 
     await restarted.start()
     try:

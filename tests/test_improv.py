@@ -175,7 +175,7 @@ async def router(radio: FakeBLESource) -> AsyncIterator[BLEService]:
 
 @pytest.fixture
 def peripherals(peripherals: Peripherals, router: BLEService) -> Peripherals:
-    return Peripherals(peripherals | {"ble": router.endpoint})
+    return Peripherals({**peripherals.bound, "ble": router.endpoint})
 
 
 @pytest_asyncio.fixture
@@ -296,7 +296,7 @@ async def test_pairing_gives_the_node_the_hubs_wifi_then_pairs_it_with_a_key_of_
     assert node.received == [HOME]
     assert device_id is not None
     assert device_id == controller.device_uuid(KEYLESS.mac), "the device takes the node's own identity"
-    async with controller.platform.make_device_repository() as repo:
+    async with controller.device_repository() as repo:
         device = await repo.get(device_id, as_=ESPhomeDevice)
         assert await repo.get(ble_discovery.id) is None, "the Hub's device moved to the node's identity"
     assert device is not None

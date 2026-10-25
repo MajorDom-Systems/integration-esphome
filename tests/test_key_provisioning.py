@@ -59,7 +59,7 @@ async def keyless_discovery(controller: ESPhomeController, mdns: FakeMDNS, keyle
 
 
 async def stored(controller: ESPhomeController, device_id: Any) -> ESPhomeDevice:
-    async with controller.platform.make_device_repository() as repo:
+    async with controller.device_repository() as repo:
         device = await repo.get(device_id, as_=ESPhomeDevice)
     assert device is not None
     return device
@@ -121,7 +121,8 @@ async def test_the_node_keeps_its_key_across_its_restart_and_the_hubs(
 
     await controller.stop()
     output.connected_devices.clear()
-    restarted = ESPhomeController(controller.platform, controller.peripherals)
+    restarted = ESPhomeController(controller.platform)
+    restarted.peripherals = controller.peripherals
     await restarted.start()
     try:
         await wait_until(lambda: keyless_discovery.id in output.connected_devices, 15, "the Hub to reconnect")
@@ -250,7 +251,8 @@ async def test_a_key_set_before_a_failed_reconnect_is_kept_for_the_retry_even_ac
     assert (await stored(controller, found.id)).integration_data.encryption_key == node.key
     assert output.updated_discoveries[-1].last_error
     await controller.stop()
-    restarted = ESPhomeController(controller.platform, controller.peripherals)
+    restarted = ESPhomeController(controller.platform)
+    restarted.peripherals = controller.peripherals
     await restarted.start()
     try:
         node.reachable_with_key = True

@@ -34,15 +34,6 @@ class ESPhomeComponentType(StrEnum):
     TEXT_SENSOR = "text_sensor"
 
 
-class ESPhomeSettings(BaseModel):
-    is_bluetooth_proxy_enabled: bool = Field(
-        True,
-        title="Bluetooth proxies",
-        description="Reach Bluetooth devices through ESPHome devices with bluetooth_proxy. A device serves one hub "
-        "at a time: turn this off only if another hub needs its Bluetooth proxy.",
-    )
-
-
 class ESPhomeDeviceIntegrationData(BaseModel):
     device_name: str | None = None
     unique_id: str | None = None

@@ -362,7 +362,7 @@ async def pair(controller: ESPhomeController, mdns: FakeMDNS, node: str) -> ESPh
     discovery = await announce(controller, mdns, node)
     await hub_creates_device(controller.platform, discovery, name=node)
     await controller.pair_device(discovery, None)
-    async with controller.platform.make_device_repository() as repo:
+    async with controller.device_repository() as repo:
         device = await repo.get(discovery.id, as_=ESPhomeDevice)
     assert device is not None
     return device

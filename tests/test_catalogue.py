@@ -97,7 +97,7 @@ async def test_every_entity_kind_works_end_to_end(
 
         await controller.pair_device(discovery, credentials=None)
 
-        async with controller.platform.make_device_repository() as repo:
+        async with controller.device_repository() as repo:
             device = await repo.get(discovery.id, as_=ESPhomeDevice)
         assert device is not None
         assert {p.integration_data.component_type for p in device.parameters} <= {kind}

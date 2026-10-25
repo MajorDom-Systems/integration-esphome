@@ -12,6 +12,7 @@ from majordom_integration_sdk.schemas.device import Device, Discovery
 from majordom_integration_sdk.schemas.parameter import ParameterDataType
 from majordom_integration_sdk.testing import RecordingControllerOutput
 
+from majordom_esphome.controller import ESPhomeController
 from majordom_esphome.models import ESPhomeDevice, ESPhomeDeviceIntegrationData, ESPhomeParameter
 
 ROOM = UUID(int=42)
@@ -22,7 +23,7 @@ async def hub_creates_device(
 ) -> None:
     """What the Hub does when the user picks a discovery: it creates the device (name, room) *before* asking the
     integration to pair (`DeviceProvider.create_device`). The integration completes that device."""
-    async with deps.make_device_repository() as repo:
+    async with deps.make_device_repository(discovery.integration) as repo:
         await repo.save(
             Device(
                 id=discovery.id,
@@ -125,7 +126,7 @@ def leaked_tasks() -> list[asyncio.Task[Any]]:
 async def assert_not_paired(deps: Platform, device_id: UUID, kept_key: bool = False) -> None:
     """A failed pairing leaves the device as the Hub created it: no parameters, no connection data, except (`kept_key`)
     the key the integration already set on the node, kept so the node is not locked out of the next attempt."""
-    async with deps.make_device_repository() as repo:
+    async with deps.make_device_repository(ESPhomeController.name) as repo:
         device = await repo.get(device_id, as_=ESPhomeDevice)
     assert device is not None, "the device the Hub created must not be deleted by the integration"
     assert device.parameters == []

@@ -6,7 +6,7 @@ import asyncio
 import base64
 import logging
 import secrets
-from collections.abc import Coroutine, Mapping
+from collections.abc import Coroutine
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
@@ -15,7 +15,6 @@ from aioesphomeapi import ZERO_NOISE_PSK, APIClient, EntityInfo, EntityState
 from majordom_integration_sdk import Endpoint, MissingCredentialsError, Need, WifiCredentials
 from majordom_integration_sdk.capabilities import BLEDiscoveryInfo, BLERouter, Zeroconf, ZeroconfDiscoveryInfo
 from majordom_integration_sdk.controller import AbstractController, Platform
-from majordom_integration_sdk.peripherals import Bound
 from majordom_integration_sdk.schemas import (
     CredentialsType,
     DeviceParameterChange,
@@ -24,6 +23,7 @@ from majordom_integration_sdk.schemas import (
 from majordom_integration_sdk.schemas.command import DeviceCommand
 from majordom_integration_sdk.schemas.device import Discovery
 from majordom_integration_sdk.schemas.parameter import ParameterVisibility
+from pydantic import BaseModel, Field
 
 from . import improv, mapper
 from .bluetooth import ESPhomeBLESource, ble_source_of
@@ -33,7 +33,6 @@ from .models import (
     ESPhomeDeviceIntegrationData,
     ESPhomeParameter,
     ESPhomeParameterIntegrationData,
-    ESPhomeSettings,
     ParameterSpec,
 )
 
@@ -61,7 +60,7 @@ class _ImprovNode:
     address: str
 
 
-class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
+class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESPhomeController.Settings"]):
     name = "esphome"
     # Nodes are found over mDNS. Devices on Thread reach the hub through a border router; Wi-Fi devices need nothing.
     # The router sets unprovisioned nodes up over Improv BLE; the nodes that proxy Bluetooth are offered back to it.
@@ -70,10 +69,17 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
         Need("thread", ["otbr-rest"], is_required=False),
         Need("ble", ["router"], is_required=False),
     ]
-    settings = ESPhomeSettings
 
-    def __init__(self, platform: Platform, peripherals: Mapping[str, Bound] | None = None) -> None:
-        super().__init__(platform, peripherals)
+    class Settings(BaseModel):
+        is_bluetooth_proxy_enabled: bool = Field(
+            True,
+            title="Bluetooth proxies",
+            description="Reach Bluetooth devices through ESPHome devices with bluetooth_proxy. A device serves one hub "
+            "at a time: turn this off only if another hub needs its Bluetooth proxy.",
+        )
+
+    def __init__(self, platform: Platform, *, settings: ESPhomeController.Settings | None = None):
+        super().__init__(platform, settings=settings)
         self._connections: dict[UUID, ESPhomeDeviceConnection] = {}
         self._ble_sources: dict[UUID, ESPhomeBLESource] = {}  # the nodes lending their Bluetooth radio to the hub
         self._discoveries: dict[UUID, Discovery] = {}
@@ -87,11 +93,6 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
         self._paired: set[UUID] = set()
         self._tasks: set[asyncio.Task[None]] = set()
         self._states: dict[UUID, dict[int, EntityState]] = {}
-
-    @property
-    def _settings(self) -> ESPhomeSettings:
-        settings = self.platform.settings
-        return settings if isinstance(settings, ESPhomeSettings) else ESPhomeSettings()
 
     @property
     def discoveries(self) -> dict[UUID, Discovery]:
@@ -269,14 +270,14 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
             connection.addresses = refreshed
 
     async def _save_integration_data(self, device_id: UUID, **changes: Any) -> None:
-        async with self.platform.make_device_repository() as repo:
+        async with self.device_repository() as repo:
             device = await repo.get(device_id, as_=ESPhomeDevice)
             if device is not None:
                 data = device.integration_data.model_copy(update=changes)
                 await repo.save(device.model_copy(update={"integration_data": data}))
 
     async def _load_paired_devices(self) -> None:
-        async with self.platform.make_device_repository() as repo:
+        async with self.device_repository() as repo:
             devices = await repo.get_all(ESPhomeDevice)
         for device in devices:
             if device.integration_data.addresses:  # else the Hub created it, but its pairing never completed
@@ -300,7 +301,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
             on_state=self._on_state,
             on_availability=self._on_availability,
             on_addresses=self._on_addresses,
-            on_client=self._on_client if self._settings.is_bluetooth_proxy_enabled else None,
+            on_client=self._on_client if self.settings.is_bluetooth_proxy_enabled else None,
         )
 
     def _spawn(self, coroutine: Coroutine[Any, Any, None]) -> None:
@@ -332,7 +333,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
             await self._save_integration_data(device_id, addresses=addresses)
 
     async def _update_device(self, device_id: UUID, **changes: Any) -> ESPhomeDevice | None:
-        async with self.platform.make_device_repository() as repo:
+        async with self.device_repository() as repo:
             device = await repo.get(device_id, as_=ESPhomeDevice)
             if device is None:
                 return None
@@ -428,7 +429,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
         node = self._improv_nodes[discovery.id]
         try:
             wifi = self._wifi_credentials()
-            async with self.platform.make_device_repository() as repo:
+            async with self.device_repository() as repo:
                 hub_device = await repo.get(discovery.id, as_=ESPhomeDevice)
             if hub_device is None:
                 raise LookupError("The Hub has not created a device for this discovery")
@@ -449,7 +450,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
                 raise TimeoutError(f"The device joined {wifi.ssid} but did not show up on the network") from None
             finally:
                 self._joining.pop(node.name, None)
-            async with self.platform.make_device_repository() as repo:
+            async with self.device_repository() as repo:
                 await repo.save(hub_device.model_copy(update={"id": on_network.id}), previous_id=discovery.id)
             await self._pair_over_api(on_network, credentials=None)
         except MissingCredentialsError:
@@ -491,7 +492,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
             encryption_key = credentials.value if credentials and credentials_type == CredentialsType.secret else None
             if credentials_type == CredentialsType.secret and not encryption_key:
                 raise ValueError("The encryption key is required for this device")
-            async with self.platform.make_device_repository() as repo:
+            async with self.device_repository() as repo:
                 hub_device = await repo.get(
                     discovery.id, as_=ESPhomeDevice
                 )  # the Hub creates the device before pairing
@@ -538,7 +539,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
                 }
             )
 
-            async with self.platform.make_device_repository() as repo:
+            async with self.device_repository() as repo:
                 await repo.save(device)
 
             self._connections[discovery.id] = conn
@@ -594,7 +595,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
         self, device_id: UUID, object_id: str, field: str, parameter: ESPhomeParameter, value: Any
     ) -> None:
         kept = mapper.local_value(parameter, value)
-        async with self.platform.make_device_repository() as repo:
+        async with self.device_repository() as repo:
             device = await repo.get(device_id, as_=ESPhomeDevice)
             if device is None:
                 raise ValueError(f"Unknown device {device_id}")
