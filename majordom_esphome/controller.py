@@ -6,13 +6,13 @@ import asyncio
 import base64
 import logging
 import secrets
-from collections.abc import Awaitable, Callable, Coroutine, Mapping
+from collections.abc import Coroutine, Mapping
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any
 from uuid import UUID
 
 from aioesphomeapi import ZERO_NOISE_PSK, APIClient, EntityInfo, EntityState
-from majordom_integration_sdk import Endpoint, MissingCredentialsError, Need
+from majordom_integration_sdk import Endpoint, MissingCredentialsError, Need, WifiCredentials
 from majordom_integration_sdk.capabilities import BLEDiscoveryInfo, BLERouter, Zeroconf, ZeroconfDiscoveryInfo
 from majordom_integration_sdk.controller import AbstractController, Platform
 from majordom_integration_sdk.peripherals import Bound
@@ -40,11 +40,6 @@ from .models import (
 logger = logging.getLogger(__name__)
 
 NODE_APPEAR_TIMEOUT = 60.0  # seconds for a node to announce itself over mDNS once it has joined Wi-Fi
-
-
-class WiFiCredentials(Protocol):
-    ssid: str
-    password: str
 
 
 @dataclass
@@ -432,7 +427,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
         logger.info("Setting up ESPHome device %s over BLE", discovery.device_name)
         node = self._improv_nodes[discovery.id]
         try:
-            wifi = await self._wifi_credentials()
+            wifi = self._wifi_credentials()
             async with self.platform.make_device_repository() as repo:
                 hub_device = await repo.get(discovery.id, as_=ESPhomeDevice)
             if hub_device is None:
@@ -470,15 +465,10 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
         await self.platform.output.controller_did_lose_discovery(self, on_network.id)
         return on_network.id
 
-    async def _wifi_credentials(self) -> WiFiCredentials:
-        # injected by the Hub from SDK feature/wifi-credentials on; older Hubs have none
-        provider: Callable[[], Awaitable[WiFiCredentials | None]] | None = getattr(
-            self.platform, "wifi_credentials", None
-        )
-        credentials = await provider() if provider is not None else None
-        if credentials is None:
+    def _wifi_credentials(self) -> WifiCredentials:
+        if (wifi := self.platform.context.wifi) is None:
             raise MissingCredentialsError(MissingCredentialsError.WIFI)
-        return credentials
+        return wifi
 
     async def _report_error(self, discovery_id: UUID, reason: str) -> None:
         """Show the user why pairing a discovery failed (or what it waits for), while it is still offered."""

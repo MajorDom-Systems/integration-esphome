@@ -6,7 +6,6 @@ keyless virtual node appears over mDNS.
 """
 
 import asyncio
-import dataclasses
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 
@@ -25,9 +24,9 @@ from improv_ble_client.protocol import (
     WiFiSettingsCmd,
     WiFiSettingsRes,
 )
-from majordom_integration_sdk import MissingCredentialsError
+from majordom_integration_sdk import MissingCredentialsError, WifiCredentials
 from majordom_integration_sdk.capabilities import BLEDiscoveryInfo, GattCharacteristic, GattService
-from majordom_integration_sdk.controller import Platform
+from majordom_integration_sdk.controller import Context, Platform
 from majordom_integration_sdk.peripherals import Peripherals
 from majordom_integration_sdk.runtime.peripherals.providers.ble.router import BLEService
 from majordom_integration_sdk.schemas import CredentialsType
@@ -39,13 +38,10 @@ from majordom_esphome import improv
 from majordom_esphome.controller import ESPhomeController
 from majordom_esphome.models import ESPhomeDevice
 from tests.helpers import (
-    HubDependencies,
-    WiFi,
     assert_not_paired,
     hub_creates_device,
     leaked_tasks,
     wait_until,
-    with_wifi,
 )
 from tests.virtual.mdns import Advert, FakeMDNS
 from tests.virtual.runner import KEYLESS, VirtualDevice
@@ -53,7 +49,7 @@ from tests.virtual.runner import KEYLESS, VirtualDevice
 pytestmark = pytest.mark.timeout(60)
 
 
-HOME = WiFi("Home", "correct horse battery")
+HOME = WifiCredentials("Home", "correct horse battery")
 HANDLES = {uuid: 0x11 + i for i, uuid in enumerate(IMPROV_CHARACTERISTICS)}
 
 
@@ -65,7 +61,7 @@ class FakeImprovNode:
         self.state = State.AUTHORIZED
         self.password = HOME.password  # of the network it can join
         self.fails_with: Error | None = None
-        self.received: list[WiFi] = []
+        self.received: list[WifiCredentials] = []
         self.on_joined: Callable[[], Awaitable[None]] | None = None  # it shows up on the network
         self._callbacks: dict[int, Callable[[bytes], None]] = {}
 
@@ -113,7 +109,9 @@ class FakeImprovNode:
     async def write(self, handle: int, data: bytes, response: bool = True) -> None:
         assert handle == HANDLES[CHARACTERISTIC_UUID_RPC_COMMAND]
         command = WiFiSettingsCmd.from_bytes(data)
-        asyncio.get_running_loop().create_task(self._join(WiFi(command.ssid.decode(), command.password.decode())))
+        asyncio.get_running_loop().create_task(
+            self._join(WifiCredentials(command.ssid.decode(), command.password.decode()))
+        )
 
     async def start_notify(self, handle: int, callback: Callable[[bytes], None]) -> None:
         self._callbacks[handle] = callback
@@ -124,7 +122,7 @@ class FakeImprovNode:
     async def disconnect(self) -> None:
         self._callbacks.clear()
 
-    async def _join(self, wifi: WiFi) -> None:
+    async def _join(self, wifi: WifiCredentials) -> None:
         if self.state == State.AUTHORIZATION_REQUIRED:
             self._notify(CHARACTERISTIC_UUID_ERROR, Error.NOT_AUTHORIZED)
             return
@@ -149,11 +147,6 @@ class FakeImprovNode:
 
 
 @pytest.fixture
-def hub_wifi() -> list[WiFi | None]:
-    return [HOME]
-
-
-@pytest.fixture
 def node(monkeypatch: pytest.MonkeyPatch) -> FakeImprovNode:
     monkeypatch.setattr(improv, "AUTHORIZATION_TIMEOUT", 1.0)
     monkeypatch.setattr(improv, "LEASE_TIMEOUT", 0.5)
@@ -168,11 +161,8 @@ def radio(node: FakeImprovNode) -> FakeBLESource:
 
 
 @pytest.fixture
-def deps(deps: Platform, hub_wifi: list[WiFi | None]) -> HubDependencies:
-    async def wifi_credentials() -> WiFi | None:
-        return hub_wifi[0]
-
-    return with_wifi(deps, wifi_credentials)
+def deps(deps: Platform) -> Platform:
+    return deps.copy(context=Context(wifi=HOME))
 
 
 @pytest_asyncio.fixture
@@ -456,12 +446,11 @@ async def test_a_hub_without_wifi_cannot_set_up_the_node(
     controller: ESPhomeController,
     ble_discovery: Discovery,
     node: FakeImprovNode,
-    hub_wifi: list[WiFi | None],
 ):
     """A Hub on Ethernet: told apart from any other failure, before the node is touched, so the app can ask for the
     Wi-Fi the node should join (the Hub saves it for the next attempt). The Hub returns the error to the app's pairing
     request, so the discovery's last_error is left as it was."""
-    hub_wifi[0] = None
+    controller.platform = controller.platform.copy(context=Context())
     node.reachable = False  # any BLE step would fail with another error
 
     with pytest.raises(MissingCredentialsError) as raised:
@@ -471,25 +460,6 @@ async def test_a_hub_without_wifi_cannot_set_up_the_node(
     assert node.received == []
     assert controller.discoveries[ble_discovery.id].last_error is None
     await assert_not_paired(controller.platform, ble_discovery.id)
-
-
-async def test_a_hub_whose_sdk_has_no_wifi_credentials_cannot_set_up_the_node_either(
-    deps: HubDependencies, peripherals: Peripherals, node: FakeImprovNode, radio: FakeBLESource
-):
-    controller = ESPhomeController(dataclasses.replace(deps, wifi_credentials=None), peripherals)
-    await controller.start()
-    try:
-        await node.advertise(radio)
-        (found,) = controller.discoveries.values()
-        await hub_creates_device(controller.platform, found)
-
-        with pytest.raises(MissingCredentialsError):
-            await controller.pair_device(found, credentials=None)
-
-        assert node.received == []
-        assert controller.discoveries[found.id].last_error is None
-    finally:
-        await controller.stop()
 
 
 async def test_the_reason_stays_on_the_discovery_while_the_node_keeps_advertising(
