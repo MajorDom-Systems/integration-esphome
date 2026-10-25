@@ -130,8 +130,8 @@ class ESPhomeBLEConnection:
     async def read(self, handle: int) -> bytes:
         return bytes(await self._client.bluetooth_gatt_read(self._address, handle))
 
-    async def write(self, handle: int, data: bytes, response: bool = True):
-        await self._client.bluetooth_gatt_write(self._address, handle, data, response)
+    async def write(self, handle: int, data: bytes, is_response_needed: bool = True):
+        await self._client.bluetooth_gatt_write(self._address, handle, data, is_response_needed)
 
     async def start_notify(self, handle: int, callback: Callable[[bytes], None]):
         characteristic = next(c for s in await self._gatt_services() for c in s.characteristics if c.handle == handle)

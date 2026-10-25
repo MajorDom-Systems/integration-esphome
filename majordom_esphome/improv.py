@@ -96,7 +96,7 @@ async def _provision(
             raise SetupError(f"{PRESS_BUTTON}, then pair it again") from None
 
     command = WiFiSettingsCmd(ssid.encode(), password.encode()).as_bytes()
-    await connection.write(handles[CHARACTERISTIC_UUID_RPC_COMMAND], command, response=True)
+    await connection.write(handles[CHARACTERISTIC_UUID_RPC_COMMAND], command, is_response_needed=True)
     async with asyncio.timeout(PROVISION_TIMEOUT):
         while True:
             uuid, data = await events.get()

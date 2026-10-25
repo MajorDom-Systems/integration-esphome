@@ -106,7 +106,7 @@ class FakeImprovNode:
         values = {HANDLES[CHARACTERISTIC_UUID_STATE]: self.state, HANDLES[CHARACTERISTIC_UUID_CAPABILITIES]: 0}
         return bytes([values.get(handle, Error.NO_ERROR)])
 
-    async def write(self, handle: int, data: bytes, response: bool = True) -> None:
+    async def write(self, handle: int, data: bytes, is_response_needed: bool = True) -> None:
         assert handle == HANDLES[CHARACTERISTIC_UUID_RPC_COMMAND]
         command = WiFiSettingsCmd.from_bytes(data)
         asyncio.get_running_loop().create_task(
