@@ -35,7 +35,7 @@ class ESPhomeComponentType(StrEnum):
 
 
 class ESPhomeSettings(BaseModel):
-    bluetooth_proxies: bool = Field(
+    is_bluetooth_proxy_enabled: bool = Field(
         True,
         title="Bluetooth proxies",
         description="Reach Bluetooth devices through ESPHome devices with bluetooth_proxy. A device serves one hub "

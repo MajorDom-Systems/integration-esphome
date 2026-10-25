@@ -300,7 +300,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
             on_state=self._on_state,
             on_availability=self._on_availability,
             on_addresses=self._on_addresses,
-            on_client=self._on_client if self._settings.bluetooth_proxies else None,
+            on_client=self._on_client if self._settings.is_bluetooth_proxy_enabled else None,
         )
 
     def _spawn(self, coroutine: Coroutine[Any, Any, None]) -> None:

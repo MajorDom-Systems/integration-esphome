@@ -381,7 +381,7 @@ async def test_a_paired_node_with_a_proxy_lends_its_radio(esphome, mdns, nodes, 
 
 
 def test_the_setting_is_on_by_default():
-    assert ESPhomeSettings().bluetooth_proxies is True
+    assert ESPhomeSettings().is_bluetooth_proxy_enabled is True
 
 
 async def test_a_node_without_a_proxy_lends_nothing(esphome, mdns, nodes, ble):
@@ -394,7 +394,7 @@ async def test_a_node_without_a_proxy_lends_nothing(esphome, mdns, nodes, ble):
 
 
 async def test_nothing_is_lent_while_the_setting_is_off(hub, peripherals, mdns, nodes, ble):
-    controller = ESPhomeController(hub.copy(settings=ESPhomeSettings(bluetooth_proxies=False)), peripherals)
+    controller = ESPhomeController(hub.copy(settings=ESPhomeSettings(is_bluetooth_proxy_enabled=False)), peripherals)
     await controller.start()
     try:
         await pair(controller, mdns, "kitchen")
