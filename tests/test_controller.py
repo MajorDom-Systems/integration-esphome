@@ -179,6 +179,6 @@ def test_it_needs_zeroconf_and_borrows_the_router_never_raw_bluetooth():
     from majordom_integration_sdk import Endpoint
 
     needs = {need.family: need for need in ESPhomeController.needs}
-    assert needs["mdns"].dialects == ["zeroconf"] and needs["mdns"].required
-    assert needs["ble"].accepts(Endpoint("ble", "router")) and not needs["ble"].required
+    assert needs["mdns"].dialects == ["zeroconf"] and needs["mdns"].is_required
+    assert needs["ble"].accepts(Endpoint("ble", "router")) and not needs["ble"].is_required
     assert not needs["ble"].accepts(Endpoint("ble", "bluez", "hci0"))

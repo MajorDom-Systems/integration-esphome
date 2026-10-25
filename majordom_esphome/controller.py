@@ -67,8 +67,8 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
     # The router sets unprovisioned nodes up over Improv BLE; the nodes that proxy Bluetooth are offered back to it.
     needs = [
         Need("mdns", ["zeroconf"]),
-        Need("thread", ["otbr-rest"], required=False),
-        Need("ble", ["router"], required=False),
+        Need("thread", ["otbr-rest"], is_required=False),
+        Need("ble", ["router"], is_required=False),
     ]
     settings = ESPhomeSettings
 
