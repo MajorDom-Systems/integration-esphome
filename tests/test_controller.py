@@ -175,10 +175,10 @@ async def test_fetch_of_unknown_device_raises(controller: ESPhomeController, moc
         await controller.fetch(stranger)
 
 
-def test_it_needs_dns_sd_and_borrows_the_router_never_raw_bluetooth():
+def test_it_needs_zeroconf_and_borrows_the_router_never_raw_bluetooth():
     from majordom_integration_sdk import Endpoint
 
     needs = {need.family: need for need in ESPhomeController.needs}
-    assert needs["mdns"].dialects == ["dns-sd"] and needs["mdns"].required
+    assert needs["mdns"].dialects == ["zeroconf"] and needs["mdns"].required
     assert needs["ble"].accepts(Endpoint("ble", "router")) and not needs["ble"].required
     assert not needs["ble"].accepts(Endpoint("ble", "bluez", "hci0"))

@@ -66,7 +66,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
     # Nodes are found over mDNS. Devices on Thread reach the hub through a border router; Wi-Fi devices need nothing.
     # The router sets unprovisioned nodes up over Improv BLE; the nodes that proxy Bluetooth are offered back to it.
     needs = [
-        Need("mdns", ["dns-sd"]),
+        Need("mdns", ["zeroconf"]),
         Need("thread", ["otbr-rest"], required=False),
         Need("ble", ["router"], required=False),
     ]
