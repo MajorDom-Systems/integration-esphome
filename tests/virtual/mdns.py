@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 MDNS_TYPE = "_esphomelib._tcp.local."
 NOISE_PROTOCOL = "Noise_NNpsk0_25519_ChaChaPoly_SHA256"
-SDK_MODULE = "majordom_integration_sdk.runtime.peripherals.providers.dns_sd"
+SDK_MODULE = "majordom_integration_sdk.runtime.peripherals.providers.zeroconf"
 
 
 @dataclass

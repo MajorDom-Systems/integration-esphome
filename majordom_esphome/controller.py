@@ -13,7 +13,7 @@ from uuid import UUID
 
 from aioesphomeapi import ZERO_NOISE_PSK, APIClient, EntityInfo, EntityState
 from majordom_integration_sdk import Endpoint, MissingCredentialsError, Need
-from majordom_integration_sdk.capabilities import DNSSD, BLEDiscoveryInfo, BLERouter, ZeroconfDiscoveryInfo
+from majordom_integration_sdk.capabilities import BLEDiscoveryInfo, BLERouter, Zeroconf, ZeroconfDiscoveryInfo
 from majordom_integration_sdk.controller import AbstractController, Platform
 from majordom_integration_sdk.peripherals import Bound
 from majordom_integration_sdk.schemas import (
@@ -113,8 +113,8 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
     async def start(self) -> None:
         logger.info("Starting ESPHome integration")
 
-        dns_sd: DNSSD = self.peripherals.instance("mdns")
-        self._zeroconf_cancel = dns_sd.register(self, services={"_esphomelib._tcp.local."})
+        zeroconf: Zeroconf = self.peripherals.instance("mdns")
+        self._zeroconf_cancel = zeroconf.register(self, services={"_esphomelib._tcp.local."})
         if router := self._router:
             self._ble_cancel = router.register(self, {UUID(improv.SERVICE_UUID)})
         await self._load_paired_devices()
@@ -146,13 +146,13 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter]):
 
     # ZeroconfDiscoveryListener: called by the SDK's discovery service
 
-    async def zeroconf_did_discover_service(self, zeroconf: DNSSD, info: ZeroconfDiscoveryInfo) -> None:
+    async def zeroconf_did_discover_service(self, zeroconf: Zeroconf, info: ZeroconfDiscoveryInfo) -> None:
         await self._on_zeroconf_service(info)
 
-    async def zeroconf_did_update_service(self, zeroconf: DNSSD, info: ZeroconfDiscoveryInfo) -> None:
+    async def zeroconf_did_update_service(self, zeroconf: Zeroconf, info: ZeroconfDiscoveryInfo) -> None:
         await self._on_zeroconf_service(info)
 
-    async def zeroconf_did_remove_service(self, zeroconf: DNSSD, type_: str, name: str) -> None:
+    async def zeroconf_did_remove_service(self, zeroconf: Zeroconf, type_: str, name: str) -> None:
         device_id = self._discovery_names.pop(name, None)
         if device_id is not None and self._discoveries.pop(device_id, None) is not None:
             self._discovery_data.pop(device_id, None)

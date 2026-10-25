@@ -9,7 +9,7 @@ import pytest_asyncio
 from aioesphomeapi import EntityInfo
 from majordom_integration_sdk.controller import Platform
 from majordom_integration_sdk.peripherals import Peripherals
-from majordom_integration_sdk.runtime.peripherals.providers.dns_sd import ZeroconfDiscoveryService
+from majordom_integration_sdk.runtime.peripherals.providers.zeroconf import ZeroconfDiscoveryService
 from majordom_integration_sdk.schemas.device import Discovery
 from majordom_integration_sdk.schemas.parameter import ParameterRole
 from majordom_integration_sdk.testing import RecordingControllerOutput, build_test_platform
@@ -61,7 +61,7 @@ def deps() -> Platform:
 
 
 @pytest_asyncio.fixture
-async def dns_sd(mdns: FakeMDNS) -> AsyncIterator[ZeroconfDiscoveryService]:
+async def zeroconf(mdns: FakeMDNS) -> AsyncIterator[ZeroconfDiscoveryService]:
     """The SDK's real DNS-SD provider, running over the stubbed zeroconf."""
     service = ZeroconfDiscoveryService()
     await service.start()
@@ -70,8 +70,8 @@ async def dns_sd(mdns: FakeMDNS) -> AsyncIterator[ZeroconfDiscoveryService]:
 
 
 @pytest.fixture
-def peripherals(dns_sd: ZeroconfDiscoveryService) -> Peripherals:
-    return Peripherals({"mdns": dns_sd.endpoint})
+def peripherals(zeroconf: ZeroconfDiscoveryService) -> Peripherals:
+    return Peripherals({"mdns": zeroconf.endpoint})
 
 
 @pytest.fixture
