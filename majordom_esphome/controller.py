@@ -663,7 +663,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
         except Exception as exc:
             await self._let_go_of_pairing(discovery.id, conn)
             logger.exception(f"Pairing {discovery.id} failed")
-            if self._run is run:  # a stopped controller offers nothing
+            if self._is_current(run):  # a stopped controller offers nothing
                 reason = str(exc) if isinstance(exc, ValueError | LookupError) else describe_error(exc.__cause__ or exc)
                 failed = known.model_copy(update={"last_error": reason})
                 self._discoveries[discovery.id] = failed
@@ -682,8 +682,11 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
     def _refuse_if_stopped(self, run: object | None):
         """A pairing that finishes after stop() takes nothing, also once ESPHome runs again (that run may have other
         settings): the next start() connects what is paired anew. Adopting it into the new run may come later."""
-        if run is None or self._run is not run:
+        if not self._is_current(run):
             raise ConnectionError("ESPHome stopped while pairing")
+
+    def _is_current(self, run: object | None) -> bool:
+        return run is not None and run is self._run
 
     def _build_parameter(
         self, device_id: UUID, entity: EntityInfo, component: str, spec: ParameterSpec, parent: str | None = None

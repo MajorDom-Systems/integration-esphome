@@ -976,6 +976,7 @@ async def test_a_stopped_controller_offers_nothing_to_pair(
     with pytest.raises(ValueError, match="no longer discovered"):
         await esphome.pair_device(discovery, None)
     assert esphome._connections == {} and nodes.clients == []
+    assert esphome.discoveries == {}, "not even with the reason it failed"
 
 
 async def test_a_restarted_controller_reports_what_it_hears_again(
