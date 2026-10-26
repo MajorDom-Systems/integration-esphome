@@ -188,7 +188,7 @@ def test_the_package_provides_its_controller_alone(deps: Platform):
     (controller,) = majordom_esphome.peripherals(deps)
 
     assert isinstance(controller, ESPhomeController) and controller.platform is deps
-    assert controller.key == "esphome"
+    assert (controller.name, controller.key) == ("ESPHome", "esphome")
 
 
 async def test_a_border_router_coming_and_going_needs_no_restart(controller: ESPhomeController):

@@ -18,7 +18,7 @@ async def test_announced_node_becomes_a_discovery(
     assert len(output.received_discoveries) == 1
     discovered = output.received_discoveries[0]
     assert controller.discoveries == {discovered.id: discovered}
-    assert discovered.integration == controller.name
+    assert discovered.integration == controller.key  # the Hub creates its device in the controller's scope
 
 
 async def test_controller_stops_listening_on_stop(controller: ESPhomeController, mdns: FakeMDNS):

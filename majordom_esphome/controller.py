@@ -68,7 +68,7 @@ class _ImprovNode:
 
 
 class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESPhomeController.Settings"]):
-    name = "esphome"
+    name = "ESPHome"  # its key, the slug "esphome", scopes its devices
     # Nodes are found over mDNS. Devices on Thread reach the hub through a border router; Wi-Fi devices need nothing.
     # The router sets unprovisioned nodes up over Improv BLE; the nodes that proxy Bluetooth are offered back to it.
     needs = [
@@ -220,7 +220,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
 
             discovery = Discovery(
                 id=device_id,
-                integration=self.name,
+                integration=self.key,
                 transport="tcp",
                 device_manufacturer="esphome",
                 device_name=properties.get("friendly_name") or node_name,
@@ -280,7 +280,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
                 return
             discovery = Discovery(
                 id=device_id,
-                integration=self.name,
+                integration=self.key,
                 transport="ble",
                 device_manufacturer="esphome",
                 device_name=name,
