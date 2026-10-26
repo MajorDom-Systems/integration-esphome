@@ -558,3 +558,26 @@ async def test_a_pairing_that_outlives_a_stop_is_refused_and_leaves_nothing_behi
     assert esphome._connections == {} and nodes.connection_of("kitchen").disconnected
     await assert_not_paired(esphome.platform, discovery.id)
     assert leaked_tasks() == []
+
+
+async def test_a_stop_reaching_a_node_connection_from_inside_it_ends_it(
+    runtime: Runtime, esphome: ESPhomeController, mdns: FakeMDNS, nodes: Nodes, ble: BLEService
+):
+    """A node drops while the runtime is busy: its connection task tells the runtime its radio is gone and waits for
+    the runtime to act, which stops ESPHome (the Hub removed DNS-SD meanwhile). That stop ends the waiting task too."""
+    await pair(esphome, mdns, "kitchen")
+    await wait_until(lambda: sources(ble) == [lent("kitchen")], message="the node to be lent")
+    (zeroconf,) = [p for p in runtime.peripherals if isinstance(p, ZeroconfDiscoveryService)]
+    opened = len(nodes.clients)
+
+    async with runtime._lock:  # the runtime is busy
+        await nodes.connection_of("kitchen").drop()
+        await asyncio.sleep(0.05)
+        removing = asyncio.create_task(runtime.remove(zeroconf))
+        await asyncio.sleep(0.05)
+    await removing
+
+    await wait_until(lambda: runtime.status(esphome).state == PeripheralState.WAITING, message="ESPHome to stop")
+    await asyncio.sleep(1)  # past the reconnect delay
+    assert esphome._connections == {} and len(nodes.clients) == opened, "a stopped controller doesn't reconnect"
+    assert leaked_tasks() == []
