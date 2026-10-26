@@ -88,6 +88,8 @@ class ESPhomeBLESource:
         self._unsubscribe_slots: Callable[[], None] | None = None
         self._paused = False
         self.free_slots: int | None = None  # connections it can still open, as the node last said
+        # its loss shows through the node's API connection: the router never resubscribes it for hearing no one
+        self.is_loss_reported = True
         self._heard: dict[str, tuple[AdvertisementData, int]] = {}  # address -> merged advertisement, address type
 
     async def start(self, on_advertisement: OnAdvertisement):

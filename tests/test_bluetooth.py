@@ -412,6 +412,19 @@ async def test_a_node_hears_again_after_a_router_restart_cut_its_lease_short():
     await ble.stop()
 
 
+async def test_a_quiet_node_stays_subscribed(ble_and_node: tuple[BLEService, FakeAPIClient]):
+    """A node in a quiet place hears no one for a while; its loss shows through its API connection, and resubscribing
+    it would drop the replies of the connections it proxies."""
+    ble, client = ble_and_node
+    subscribed = client.on_advertisements
+    ble._silence_sec = 0.01
+    await asyncio.sleep(0.02)
+
+    await ble._revive_silent()
+
+    assert client.on_advertisements is subscribed and client.unsubscribed == 0
+
+
 async def test_a_node_says_how_many_connections_it_can_still_open(ble_and_node: tuple[BLEService, FakeAPIClient]):
     _, client = ble_and_node
     source = await source_of(client)
