@@ -70,6 +70,9 @@ class FakeAPIClient:
         self.on_notify = None
         self.on_slots: Callable[[int, int, list[int]], None] | None = None
         self.unsubscribed = 0
+        self.on_state: Callable[[bool, int, int], None] | None = None  # of the device it connected to
+        self.notifying: set[int] = set()
+        self.disconnects: list[int] = []
 
     async def device_info(self):
         if self.device_info_error:
@@ -119,8 +122,13 @@ class FakeAPIClient:
 
     async def bluetooth_device_connect(self, address, on_state, feature_flags=0, address_type=None, **kwargs):
         self.connected = (address, address_type)
+        self.on_state = on_state
         on_state(*self.answers)
-        return lambda: None
+
+        def unsubscribe():
+            self.on_state = None
+
+        return unsubscribe
 
     async def bluetooth_gatt_get_services(self, address):
         cccd = BluetoothGATTDescriptor(uuid="00002902-0000-1000-8000-00805f9b34fb", handle=6)
@@ -133,14 +141,25 @@ class FakeAPIClient:
     async def bluetooth_gatt_write(self, address, handle, data, response):
         self.writes.append((handle, data))
 
+    async def bluetooth_gatt_read(self, address: int, handle: int) -> bytearray:
+        return bytearray(b"value")
+
     async def bluetooth_gatt_start_notify(self, address, handle, callback):
         self.on_notify = callback
-        return (lambda: asyncio.sleep(0)), (lambda: None)
+        self.notifying.add(handle)
+
+        async def stop():
+            self.notifying.discard(handle)
+
+        return stop, (lambda: None)
+
+    def bluetooth_gatt_stop_notify_for_address(self, address: int): ...
 
     async def bluetooth_gatt_write_descriptor(self, address, handle, data):
         self.descriptors.append((handle, data))
 
-    async def bluetooth_device_disconnect(self, address): ...
+    async def bluetooth_device_disconnect(self, address: int):
+        self.disconnects.append(address)
 
 
 async def source_of(client: FakeAPIClient) -> ESPhomeBLESource | None:
@@ -245,6 +264,33 @@ async def test_a_closed_connection_leaves_no_notify_handler_on_the_node():
     await connection.disconnect()
 
     assert handlers == []
+
+
+async def test_a_proxied_connection_reads_stops_notifying_and_disconnects(ble_and_node):
+    ble, client = ble_and_node
+    client.advertise(MATTER_ADV)
+    await asyncio.sleep(0.01)
+    connection = await ble.connect("AA:BB:CC:DD:EE:FF")
+
+    assert await connection.read(3) == b"value"
+    await connection.start_notify(5, lambda data: None)
+    await connection.stop_notify(5)
+    assert client.notifying == set()
+    await connection.disconnect()
+    assert client.on_state is None and client.disconnects == [DEVICE]
+
+
+async def test_a_device_dropping_its_proxied_connection_is_told(ble_and_node):
+    ble, client = ble_and_node
+    client.advertise(MATTER_ADV)
+    await asyncio.sleep(0.01)
+    dropped: list[bool] = []
+    await ble.connect("AA:BB:CC:DD:EE:FF", on_disconnect=lambda: dropped.append(True))
+
+    assert client.on_state
+    client.on_state(False, 0, 0x13)  # the device went away
+
+    assert dropped == [True]
 
 
 async def test_a_refused_connection_is_an_error(ble_and_node):
