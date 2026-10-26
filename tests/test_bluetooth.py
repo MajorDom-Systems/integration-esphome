@@ -324,6 +324,11 @@ def proxies(runtime: Runtime) -> list[str]:
     return [p.key for p in runtime.peripherals if isinstance(p, BLEProxy)]
 
 
+def zeroconf_of(runtime: Runtime) -> ZeroconfDiscoveryService:
+    (zeroconf,) = [p for p in runtime.peripherals if isinstance(p, ZeroconfDiscoveryService)]
+    return zeroconf
+
+
 @pytest.fixture
 def ble() -> BLEService:
     """The Hub's Bluetooth router: the runtime runs it while ESPHome binds it."""
@@ -568,13 +573,12 @@ async def test_a_stop_reaching_a_node_connection_from_inside_it_ends_it(
     the runtime to act, which stops ESPHome (the Hub removed DNS-SD meanwhile). That stop ends the waiting task too."""
     await pair(esphome, mdns, "kitchen")
     await wait_until(lambda: sources(ble) == [lent("kitchen")], message="the node to be lent")
-    (zeroconf,) = [p for p in runtime.peripherals if isinstance(p, ZeroconfDiscoveryService)]
     opened = len(nodes.clients)
 
     async with runtime._lock:  # the runtime is busy
         await nodes.connection_of("kitchen").drop()
         await asyncio.sleep(0.05)
-        removing = asyncio.create_task(runtime.remove(zeroconf))
+        removing = asyncio.create_task(runtime.remove(zeroconf_of(runtime)))
         await asyncio.sleep(0.05)
     await removing
 
@@ -631,3 +635,26 @@ async def test_a_cancelled_pairing_lets_go_of_the_node(
     assert nodes.connection_of("kitchen").disconnected and sources(ble) == []
     await assert_not_paired(esphome.platform, discovery.id)
     assert leaked_tasks() == []
+
+
+# DNS-SD going away or restarting under it
+
+
+async def test_dns_sd_removed_first_still_lets_it_stop_cleanly(
+    runtime: Runtime, esphome: ESPhomeController, mdns: FakeMDNS, nodes: Nodes, ble: BLEService
+):
+    await pair(esphome, mdns, "kitchen")
+    await wait_until(lambda: sources(ble) == [lent("kitchen")], message="the node to be lent")
+
+    await runtime.remove(zeroconf_of(runtime))  # stopped before ESPHome, its registration gone with it
+
+    await wait_until(lambda: runtime.status(esphome).state == PeripheralState.WAITING, message="ESPHome to stop")
+    assert esphome._connections == {} and nodes.connection_of("kitchen").disconnected
+    assert leaked_tasks() == []
+
+
+async def test_nodes_are_heard_after_dns_sd_restarts(runtime: Runtime, esphome: ESPhomeController, mdns: FakeMDNS):
+    await runtime.restart(zeroconf_of(runtime))
+    await wait_until(lambda: runtime.status(esphome).state == PeripheralState.RUNNING, message="ESPHome to run")
+
+    assert await announce(esphome, mdns, "kitchen"), "a node announced after the restart is discovered"
