@@ -206,6 +206,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
             addresses = self._announced_addresses(service_info, node_name)
             if device_id in self._paired:
                 await self._refresh_addresses(device_id, addresses)
+                await self._refuse_setup(node_name, device_id)
                 return
             port = service_info.port or 6053
             # a key is configured: the user's, unless it is one this integration gave the node in an earlier attempt.
@@ -313,6 +314,18 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
         await self._save_integration_data(device_id, addresses=refreshed)
         if connection := self._connections.get(device_id):
             connection.addresses = refreshed
+
+    async def _refuse_setup(self, node_name: str, device_id: UUID):
+        """A node set up over BLE announced itself as a paired one (its Wi-Fi was reset): it is back, and its device
+        reconnects. Its setup fails rather than replace that device."""
+        joining = [joined for ble_name, joined in self._joining.items() if improv.is_node(ble_name, node_name)]
+        if not joining:
+            return
+        device = await self._update_device(device_id)
+        name = device.name if device is not None else node_name
+        for joined in joining:
+            if not joined.done():
+                joined.set_exception(ValueError(f"The device is already paired as {name}: it is back on the network"))
 
     async def _save_integration_data(self, device_id: UUID, **changes: Any) -> None:
         async with self.platform.device_repository(self) as repo:

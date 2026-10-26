@@ -352,6 +352,33 @@ async def test_pairing_gives_the_node_the_hubs_wifi_then_pairs_it_with_a_key_of_
     assert device_id in output.lost_discoveries, "the node's mDNS discovery was paired through its BLE one"
 
 
+async def test_a_paired_node_set_up_again_fails_fast_as_already_paired(
+    controller: ESPhomeController,
+    ble_discovery: Discovery,
+    node: FakeImprovNode,
+    radio: FakeBLESource,
+    mdns: FakeMDNS,
+    keyless_device: VirtualDevice,
+    output: RecordingControllerOutput,
+):
+    """Its Wi-Fi was reset: it waits for Wi-Fi again, joins, and turns out to be a device the Hub has."""
+    joins_as_keyless_device(node, mdns)
+    await controller.pair_device(ble_discovery, credentials=None)
+    await node.advertise(radio)  # provisioned
+    node.state = State.AUTHORIZED  # its Wi-Fi reset: it left the network, and waits for Wi-Fi again
+    await mdns.goodbye(Advert(name=KEYLESS.name))
+    await node.advertise(radio)
+    (again,) = controller.discoveries.values()
+    await hub_creates_device(controller.platform, again, name="Another relay")
+
+    with pytest.raises(ValueError, match="already paired as Kitchen relay"):
+        async with asyncio.timeout(controller_module.NODE_APPEAR_TIMEOUT / 2):
+            await controller.pair_device(again, credentials=None)
+
+    assert "already paired" in await last_error(output, again)
+    await assert_not_paired(controller.platform, again.id)
+
+
 async def test_a_node_waiting_for_its_button_tells_the_user_then_carries_on(
     controller: ESPhomeController,
     ble_discovery: Discovery,
