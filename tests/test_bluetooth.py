@@ -19,6 +19,7 @@ from aioesphomeapi.model import APIVersion, BluetoothGATTService, ESPHomeBluetoo
 from majordom_integration_sdk import Endpoint, Platform
 from majordom_integration_sdk.capabilities import BLEDiscoveryInfo, BLERouter
 from majordom_integration_sdk.peripherals import BLEProxy, Peripherals
+from majordom_integration_sdk.repository.memory import DeviceRepositoryMemory
 from majordom_integration_sdk.runtime import PeripheralState, Runtime
 from majordom_integration_sdk.runtime.peripherals.providers.ble.router import BLEService
 from majordom_integration_sdk.runtime.peripherals.providers.zeroconf import ZeroconfDiscoveryService
@@ -908,6 +909,30 @@ async def test_a_restarted_controller_reports_what_it_hears_again(
     await announce(esphome, mdns, "kitchen")  # heard anew
 
     assert len(output.received_discoveries) == 2
+
+
+async def test_a_paired_node_heard_while_it_starts_is_no_discovery(
+    runtime: Runtime, esphome: ESPhomeController, mdns: FakeMDNS, nodes: Nodes, monkeypatch: pytest.MonkeyPatch
+):
+    """On a restart DNS-SD's cache is warm: it tells the nodes it knows at once, maybe before the paired devices are
+    read (a busy database at boot)."""
+    await pair(esphome, mdns, "kitchen")
+    get_all = DeviceRepositoryMemory.get_all
+
+    async def slow_get_all(self: DeviceRepositoryMemory, as_: Any = None) -> Any:
+        await asyncio.sleep(0.3)
+        return await get_all(self, as_)
+
+    monkeypatch.setattr(DeviceRepositoryMemory, "get_all", slow_get_all)
+    kitchen = Advert(name="kitchen", mac=NODES["kitchen"].replace(":", ""), server="kitchen.local.", addresses=[])
+
+    restarting = asyncio.create_task(runtime.restart(esphome))
+    await asyncio.sleep(0.1)
+    await mdns.announce(kitchen)
+    await restarting
+    await mdns.announce(kitchen)
+
+    assert esphome.discoveries == {}, "picking it would open a second connection to the node"
 
 
 # Routers coming later

@@ -121,11 +121,11 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
     async def start(self):
         logger.info("Starting ESPHome integration")
         self._is_running = True
+        await self._load_paired_devices()  # first: DNS-SD tells the nodes in its cache at once, the paired ones too
 
         zeroconf: Zeroconf = self.peripherals.instance("mdns")
         self._zeroconf_cancel = zeroconf.register(self, services={"_esphomelib._tcp.local."})
         self._listen_for_improv()
-        await self._load_paired_devices()
 
     async def needed_peripheral_did_change(self, change: PeripheralChange) -> bool:
         """The router is followed in place, and a border router only carries the Thread devices to the hub: neither
