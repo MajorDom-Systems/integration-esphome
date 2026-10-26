@@ -413,6 +413,36 @@ async def test_a_node_hears_again_after_a_router_restart_cut_its_lease_short():
     await ble.stop()
 
 
+async def test_a_node_reconnecting_while_its_radio_is_leased_hears_once_released():
+    """Its API connection drops during the lease (Matter commissioning through it): ESPHome takes the radio back, then
+    lends the one of the new connection under the same name."""
+    first = FakeAPIClient()
+    old = await source_of(first)
+    assert old
+    ble = BLEService(sources=[old])
+    await ble.start()
+    listener = Listener()
+    ble.register(listener, {UUID(MATTER)})
+    first.advertise(MATTER_ADV)
+    await asyncio.sleep(0.01)
+
+    async with ble.exclusive("AA:BB:CC:DD:EE:FF", owner="matter"):
+        await ble.remove_source(old.name)
+        second = FakeAPIClient()
+        new = await source_of(second)
+        assert new
+        await ble.add_source(new)
+        assert second.on_advertisements, "the node answers the lease's connects only to its subscriber"
+        second.advertise(NAME)
+        await asyncio.sleep(0.01)
+        assert len(listener.heard) == 1, "muted while leased"
+    second.advertise(MATTER_ADV)
+    await asyncio.sleep(0.01)
+
+    assert len(listener.heard) == 2
+    await ble.stop()
+
+
 async def test_a_quiet_node_stays_subscribed(ble_and_node: tuple[BLEService, FakeAPIClient]):
     """A node in a quiet place hears no one for a while; its loss shows through its API connection, and resubscribing
     it would drop the replies of the connections it proxies."""
