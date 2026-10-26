@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import logging
 from collections.abc import Awaitable, Callable
+from typing import Any
 from uuid import UUID
 
 from aioesphomeapi import (
@@ -162,7 +163,7 @@ class ESPhomeDeviceConnection:
     def get_entities(self) -> dict[int, EntityInfo]:
         return self._entities.copy()
 
-    async def send_command(self, entity_key: int, component_type: str, command_args: dict):
+    async def send_command(self, entity_key: int, component_type: str, command_args: dict[str, Any]):
         if self._client is None or not self.ready:
             raise ConnectionError("Device not connected")
         method = getattr(self._client, f"{component_type}_command", None)

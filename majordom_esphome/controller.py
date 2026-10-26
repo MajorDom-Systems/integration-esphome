@@ -69,8 +69,6 @@ class _DiscoveryData:
     addresses: list[str]
     port: int
     mac: str | None
-    node_name: str
-    mdns_name: str
     keyless: bool  # encryption is on but no key is set: the integration gives the node one at pairing
     zero_psk: bool  # the keyless node takes its key over the zero PSK (older firmware: only in plaintext)
 
@@ -246,9 +244,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
             )
             keyless = "api_encryption_supported" in properties
             zero_psk = properties.get("api_provisioning") == "zero-psk"
-            self._discovery_data[device_id] = _DiscoveryData(
-                addresses, port, mac, node_name, service_info.name, keyless, zero_psk
-            )
+            self._discovery_data[device_id] = _DiscoveryData(addresses, port, mac, keyless, zero_psk)
             self._discovery_names[service_info.name] = device_id
             for ble_name, joined in self._joining.items():
                 if improv.is_node(ble_name, node_name) and not joined.done():
