@@ -53,7 +53,9 @@ class ESPhomeBLEConnection:
         await self._client.bluetooth_gatt_write(self._address, handle, data, is_response_needed)
 
     async def start_notify(self, handle: int, callback: Callable[[bytes], None]):
-        characteristic = next(c for s in await self._gatt_services() for c in s.characteristics if c.handle == handle)
+        characteristics = (c for s in await self._gatt_services() for c in s.characteristics)
+        if (characteristic := next((c for c in characteristics if c.handle == handle), None)) is None:
+            raise LookupError(f"The device has no characteristic {handle}")
         stop, _ = await self._client.bluetooth_gatt_start_notify(self._address, handle, lambda _, d: callback(bytes(d)))
         self._notifying[handle] = stop
         # the proxy leaves the client characteristic configuration to the client
@@ -165,6 +167,6 @@ async def ble_source_of(client: APIClient) -> ESPhomeBLESource | None:
     if (version := client.api_version) is None:  # the connection closed meanwhile
         return None
     features = BluetoothProxyFeature(info.bluetooth_proxy_feature_flags_compat(version))
-    if not features & BluetoothProxyFeature.RAW_ADVERTISEMENTS:  # firmware before 2023.? or no proxy
+    if not features & BluetoothProxyFeature.RAW_ADVERTISEMENTS:  # no proxy, or firmware too old to stream them
         return None
     return ESPhomeBLESource(client, info.bluetooth_mac_address or info.mac_address, features)

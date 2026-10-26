@@ -22,8 +22,3 @@ jobs:
       # The end-to-end tests run against virtual ESPHome devices, built (once) from tests/virtual/sketches
       # --prefer-binary: the newest dbus-fast (a Linux-only esphome dependency) has no wheel yet and fails to build
       setup-script: pipx install esphome --pip-args="--prefer-binary"
-    #   # Runs after `poetry install`, before checks (system deps, Cython build_ext, ...):
-    #   setup-script: |
-    #     sudo apt-get update && sudo apt-get install -y espeak-ng
-    #   # Teardown, always runs after checks:
-    #   post-run-script: docker compose down

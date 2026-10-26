@@ -326,6 +326,16 @@ async def test_a_device_dropping_its_proxied_connection_is_told(ble_and_node: tu
     assert dropped == [True]
 
 
+async def test_notifying_an_unknown_handle_is_a_lookup_error(ble_and_node: tuple[BLEService, FakeAPIClient]):
+    ble, client = ble_and_node
+    client.advertise(MATTER_ADV)
+    await asyncio.sleep(0.01)
+    connection = await ble.connect("AA:BB:CC:DD:EE:FF")
+
+    with pytest.raises(LookupError):
+        await connection.start_notify(99, lambda data: None)
+
+
 async def test_a_refused_connection_is_an_error(ble_and_node: tuple[BLEService, FakeAPIClient]):
     ble, client = ble_and_node
     client.answers = (False, 0, 133)

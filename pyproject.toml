@@ -35,7 +35,7 @@ dependencies = [
 
 [tool.poetry.dependencies]
 python = "^3.13"
-noiseprotocol = { version = ">=0.3.1,<1.0", python = ">=3.12" }
+noiseprotocol = ">=0.3.1,<1.0"
 
 [project.urls]
 Homepage = "https://majordom.io"

@@ -380,9 +380,10 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
     async def _on_client(self, device_id: UUID, client: APIClient | None):
         """A paired node connected: lend its Bluetooth radio, if it has one to lend, as a ``ble/esphome-proxy`` the
         router takes; a node being paired serves no one until it is. A node gone: take the radio back."""
-        if self._proxies.pop(device_id, None):
-            await self.output.controller_did_change_provided(self)
-        if client is not None and device_id in self._connections and (source := await ble_source_of(client)):
+        if client is None:
+            if self._proxies.pop(device_id, None):
+                await self.output.controller_did_change_provided(self)
+        elif device_id in self._connections and (source := await ble_source_of(client)):
             self._proxies[device_id] = BLEProxy(source, name=source.mac)
             await self.output.controller_did_change_provided(self)
 

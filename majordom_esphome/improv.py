@@ -1,4 +1,4 @@
-"""Wi-Fi setup of unprovisioned ESPHome nodes over Improv BLE, through the SDK's `BLEService`, so a node is reached
+"""Wi-Fi setup of unprovisioned ESPHome nodes over Improv BLE, through the SDK's `BLERouter`, so a node is reached
 by whichever radio hears it best: the Hub's own adapter or another ESPHome node lending its Bluetooth.
 `py-improv-ble-client` (the library HA uses) supplies only the protocol: the advert filter and the frames.
 
@@ -29,7 +29,7 @@ from majordom_integration_sdk.capabilities import BLEBusyError, BLEConnection, B
 __all__ = ["SERVICE_UUID", "SetupError", "is_node", "provision", "waits_for_wifi"]
 
 AUTHORIZATION_TIMEOUT = 60.0  # for the user to press the node's button
-PROVISION_TIMEOUT = 90.0  # a node silent this long is dropped, as the library did
+PROVISION_TIMEOUT = 90.0  # from giving the node the Wi-Fi to its answer
 LEASE_TIMEOUT = 30.0  # for a radio that hears the node to free up
 BLE_NAME_LENGTH = 20  # ESPHome cuts the name it advertises to this, keeping a `-xxxxxx` MAC suffix
 OWNER = "esphome-improv"
