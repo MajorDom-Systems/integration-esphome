@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import pytest_asyncio
 from aioesphomeapi import EntityInfo
-from majordom_integration_sdk.controller import Platform
+from majordom_integration_sdk import Platform
 from majordom_integration_sdk.peripherals import Peripherals
 from majordom_integration_sdk.runtime.peripherals.providers.zeroconf import ZeroconfDiscoveryService
 from majordom_integration_sdk.schemas.device import Discovery
@@ -75,15 +75,17 @@ def peripherals(zeroconf: ZeroconfDiscoveryService) -> Peripherals:
 
 
 @pytest.fixture
-def output(deps: Platform) -> RecordingControllerOutput:
-    assert isinstance(deps.output, RecordingControllerOutput)
-    return deps.output
+def output() -> RecordingControllerOutput:
+    return RecordingControllerOutput()
 
 
 @pytest_asyncio.fixture
-async def controller(deps: Platform, peripherals: Peripherals) -> AsyncIterator[ESPhomeController]:
+async def controller(
+    deps: Platform, peripherals: Peripherals, output: RecordingControllerOutput
+) -> AsyncIterator[ESPhomeController]:
     ctrl = ESPhomeController(deps)
     ctrl.peripherals = peripherals
+    ctrl.output = output
     await ctrl.start()
     yield ctrl
     await ctrl.stop()
@@ -142,7 +144,7 @@ async def discovery(controller: ESPhomeController, mdns: FakeMDNS, device: Virtu
 async def paired(controller: ESPhomeController, discovery: Discovery) -> ESPhomeDevice:
     """The plain virtual device, paired and connected."""
     await controller.pair_device(discovery, credentials=None)
-    async with controller.device_repository() as repo:
+    async with controller.platform.device_repository(controller) as repo:
         stored = await repo.get(discovery.id, as_=ESPhomeDevice)
     assert stored is not None
     return stored

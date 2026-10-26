@@ -6,7 +6,7 @@ from collections.abc import Callable
 from typing import Any
 from uuid import UUID
 
-from majordom_integration_sdk.controller import Platform
+from majordom_integration_sdk import Platform
 from majordom_integration_sdk.schemas import DeviceParameterChange
 from majordom_integration_sdk.schemas.device import Device, Discovery
 from majordom_integration_sdk.schemas.parameter import ParameterDataType

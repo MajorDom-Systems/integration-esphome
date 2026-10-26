@@ -54,13 +54,14 @@ class ESPhomeParameterIntegrationData(BaseModel):
     sub_field: str | None = None
 
 
-class ESPhomeDevice(Device):
-    integration_data: ESPhomeDeviceIntegrationData
+class ESPhomeDevice(Device[ESPhomeDeviceIntegrationData]):
+    # empty until paired: the Hub creates the device without it
+    integration_data: ESPhomeDeviceIntegrationData = Field(default_factory=ESPhomeDeviceIntegrationData)
     parameters: list["ESPhomeParameter"] = Field(default_factory=list)
 
 
-class ESPhomeParameter(Parameter):
-    integration_data: ESPhomeParameterIntegrationData
+class ESPhomeParameter(Parameter[ESPhomeParameterIntegrationData]):
+    pass
 
 
 @dataclass(frozen=True)

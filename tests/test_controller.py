@@ -8,8 +8,7 @@ from uuid import UUID
 
 import pytest
 from aioesphomeapi import CameraInfo, LightInfo, SwitchInfo
-from majordom_integration_sdk import Endpoint, PeripheralChange
-from majordom_integration_sdk.controller import Platform
+from majordom_integration_sdk import Endpoint, PeripheralChange, Platform
 from majordom_integration_sdk.schemas.command import DeviceCommand
 from majordom_integration_sdk.schemas.device import Discovery
 from majordom_integration_sdk.schemas.parameter import ParameterDataType, ParameterRole
@@ -40,7 +39,7 @@ async def mock_paired(controller: ESPhomeController, mock_discovery: Discovery, 
         11: make_entity(LightInfo, 11, "Lamp", supported_color_modes=[3]),
     }
     await controller.pair_device(mock_discovery, credentials=None)
-    async with controller.device_repository() as repo:
+    async with controller.platform.device_repository(controller) as repo:
         stored = await repo.get(mock_discovery.id, as_=ESPhomeDevice)
     assert stored is not None
     return stored
@@ -72,7 +71,7 @@ async def test_pairing_skips_entities_it_cannot_map(
 
     await controller.pair_device(mock_discovery, credentials=None)
 
-    async with controller.device_repository() as repo:
+    async with controller.platform.device_repository(controller) as repo:
         stored = await repo.get(mock_discovery.id, as_=ESPhomeDevice)
     assert stored is not None
     assert {p.integration_data.entity_name for p in stored.parameters} == {"Relay"}
@@ -121,7 +120,7 @@ async def test_command_to_disconnected_device_fails_visibly(
             DeviceCommand(device_id=mock_paired.id, parameter_id=relay.id, value=True), mock_paired, relay
         )
 
-    async with controller.device_repository() as repo:
+    async with controller.platform.device_repository(controller) as repo:
         stored = await repo.get(mock_paired.id, as_=ESPhomeDevice)
     assert stored is not None
     assert stored.last_error, "a failed command must leave a user-readable last_error on the device"
@@ -135,7 +134,7 @@ async def test_command_on_read_only_parameter_is_rejected(
     _, connection = mock_connection
     connection.get_entities.return_value = {3: make_entity(SensorInfo, 3, "Temperature")}
     await controller.pair_device(mock_discovery, credentials=None)
-    async with controller.device_repository() as repo:
+    async with controller.platform.device_repository(controller) as repo:
         stored = await repo.get(mock_discovery.id, as_=ESPhomeDevice)
     assert stored is not None
     temperature = param(stored, "Temperature")

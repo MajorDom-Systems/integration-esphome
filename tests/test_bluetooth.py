@@ -21,9 +21,9 @@ from aioesphomeapi.model import (
     BluetoothGATTService,
     ESPHomeBluetoothGATTServices,
 )
-from majordom_integration_sdk.controller import Platform
-from majordom_integration_sdk.peripherals import Peripherals
-from majordom_integration_sdk.runtime import BLEProxy, PeripheralState, Runtime
+from majordom_integration_sdk import Platform
+from majordom_integration_sdk.peripherals import BLEProxy, Peripherals
+from majordom_integration_sdk.runtime import PeripheralState, Runtime
 from majordom_integration_sdk.runtime.peripherals.providers.ble.router import BLEService
 from majordom_integration_sdk.runtime.peripherals.providers.zeroconf import ZeroconfDiscoveryService
 from majordom_integration_sdk.schemas.device import Discovery
@@ -344,10 +344,17 @@ def settings() -> ESPhomeController.Settings:
 
 @pytest.fixture
 async def runtime(
-    deps: Platform, settings: ESPhomeController.Settings, ble: BLEService, nodes: Nodes, mdns: FakeMDNS, tmp_path
+    deps: Platform,
+    settings: ESPhomeController.Settings,
+    ble: BLEService,
+    nodes: Nodes,
+    mdns: FakeMDNS,
+    output: RecordingControllerOutput,
+    tmp_path,
 ) -> AsyncIterator[Runtime]:
     """ESPHome run as by the Hub, beside the Bluetooth router and DNS-SD it binds."""
-    runtime = Runtime(tmp_path / "data", [ble, ZeroconfDiscoveryService(), ESPhomeController(deps, settings=settings)])
+    peripherals = [ble, ZeroconfDiscoveryService(), ESPhomeController(deps, settings=settings)]
+    runtime = Runtime(tmp_path / "data", peripherals, platform=deps, controller_output=output)
     await runtime.start()
     await wait_until(lambda: all(runtime.status(p).state == PeripheralState.RUNNING for p in runtime.peripherals))
     yield runtime
@@ -370,7 +377,7 @@ async def pair(controller: ESPhomeController, mdns: FakeMDNS, node: str) -> ESPh
     discovery = await announce(controller, mdns, node)
     await hub_creates_device(controller.platform, discovery, name=node)
     await controller.pair_device(discovery, None)
-    async with controller.device_repository() as repo:
+    async with controller.platform.device_repository(controller) as repo:
         device = await repo.get(discovery.id, as_=ESPhomeDevice)
     assert device is not None
     return device

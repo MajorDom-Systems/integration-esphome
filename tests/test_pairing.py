@@ -125,7 +125,7 @@ async def test_pairing_keeps_what_the_hub_already_knows_about_the_device(
 ):
     await controller.pair_device(discovery, credentials=None)
 
-    async with controller.device_repository() as repo:
+    async with controller.platform.device_repository(controller) as repo:
         stored = await repo.get(discovery.id, as_=ESPhomeDevice)
     assert stored is not None
     assert (stored.room_id, stored.name) == (ROOM, "Kitchen relay")  # the user's choices, saved by the Hub
@@ -138,7 +138,7 @@ async def test_pairing_needs_the_device_the_hub_creates(controller: ESPhomeContr
     with pytest.raises(LookupError):
         await controller.pair_device(discovery, credentials=None)
 
-    async with controller.device_repository() as repo:
+    async with controller.platform.device_repository(controller) as repo:
         assert await repo.get(discovery.id) is None  # the integration must not invent the device
 
 
@@ -173,7 +173,7 @@ async def test_device_can_be_paired_again_after_unpairing(
 
     await controller.pair_device(discovery, credentials=None)
 
-    async with controller.device_repository() as repo:
+    async with controller.platform.device_repository(controller) as repo:
         again = await repo.get(discovery.id, as_=ESPhomeDevice)
     assert again is not None
     assert [p.id for p in again.parameters] == [p.id for p in paired.parameters]
@@ -207,7 +207,7 @@ async def test_pairing_is_retryable_after_the_device_comes_back(
 
     await controller.pair_device(output.updated_discoveries[-1], credentials=None)
 
-    async with controller.device_repository() as repo:
+    async with controller.platform.device_repository(controller) as repo:
         stored = await repo.get(discovery.id, as_=ESPhomeDevice)
     assert stored is not None
     assert stored.last_error is None

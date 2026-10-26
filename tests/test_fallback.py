@@ -37,7 +37,7 @@ async def extras(controller: ESPhomeController, mdns: FakeMDNS, extras_device: V
     (discovery,) = controller.discoveries.values()
     await hub_creates_device(controller.platform, discovery)
     await controller.pair_device(discovery, credentials=None)
-    async with controller.device_repository() as repo:
+    async with controller.platform.device_repository(controller) as repo:
         stored = await repo.get(discovery.id, as_=ESPhomeDevice)
     assert stored is not None
     return stored

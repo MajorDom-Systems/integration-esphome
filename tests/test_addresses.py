@@ -22,7 +22,7 @@ async def pair(controller: ESPhomeController, mdns: FakeMDNS, advert: Advert) ->
 
 
 async def stored(controller: ESPhomeController, device_id) -> ESPhomeDevice:
-    async with controller.device_repository() as repo:
+    async with controller.platform.device_repository(controller) as repo:
         device = await repo.get(device_id, as_=ESPhomeDevice)
     assert device is not None
     return device

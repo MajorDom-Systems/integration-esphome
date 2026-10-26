@@ -8,6 +8,7 @@ keyless virtual node appears over mDNS.
 import asyncio
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
+from dataclasses import replace
 
 import pytest
 import pytest_asyncio
@@ -24,9 +25,8 @@ from improv_ble_client.protocol import (
     WiFiSettingsCmd,
     WiFiSettingsRes,
 )
-from majordom_integration_sdk import MissingCredentialsError, WifiCredentials
+from majordom_integration_sdk import MissingCredentialsError, Platform, WifiCredentials
 from majordom_integration_sdk.capabilities import BLEDiscoveryInfo, GattCharacteristic, GattService
-from majordom_integration_sdk.controller import Context, Platform
 from majordom_integration_sdk.peripherals import PeripheralChange, Peripherals
 from majordom_integration_sdk.runtime.peripherals.providers.ble.router import BLEService
 from majordom_integration_sdk.schemas import CredentialsType
@@ -162,7 +162,7 @@ def radio(node: FakeImprovNode) -> FakeBLESource:
 
 @pytest.fixture
 def deps(deps: Platform) -> Platform:
-    return deps.copy(context=Context(wifi=HOME))
+    return replace(deps, wifi=HOME)
 
 
 @pytest_asyncio.fixture
@@ -324,7 +324,7 @@ async def test_pairing_gives_the_node_the_hubs_wifi_then_pairs_it_with_a_key_of_
     assert node.received == [HOME]
     assert device_id is not None
     assert device_id == controller.device_uuid(KEYLESS.mac), "the device takes the node's own identity"
-    async with controller.device_repository() as repo:
+    async with controller.platform.device_repository(controller) as repo:
         device = await repo.get(device_id, as_=ESPhomeDevice)
         assert await repo.get(ble_discovery.id) is None, "the Hub's device moved to the node's identity"
     assert device is not None
@@ -478,7 +478,7 @@ async def test_a_hub_without_wifi_cannot_set_up_the_node(
     """A Hub on Ethernet: told apart from any other failure, before the node is touched, so the app can ask for the
     Wi-Fi the node should join (the Hub saves it for the next attempt). The Hub returns the error to the app's pairing
     request, so the discovery's last_error is left as it was."""
-    controller.platform = controller.platform.copy(context=Context())
+    controller.platform = replace(controller.platform, wifi=None)
     node.reachable = False  # any BLE step would fail with another error
 
     with pytest.raises(MissingCredentialsError) as raised:
