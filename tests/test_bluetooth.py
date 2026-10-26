@@ -32,7 +32,7 @@ from majordom_integration_sdk.testing import RecordingControllerOutput
 from majordom_esphome.bluetooth import ESPhomeBLESource, ble_source_of
 from majordom_esphome.controller import ESPhomeController
 from majordom_esphome.models import ESPhomeDevice
-from tests.helpers import hub_creates_device, leaked_tasks, wait_until
+from tests.helpers import assert_not_paired, hub_creates_device, leaked_tasks, wait_until
 from tests.virtual.mdns import Advert, FakeMDNS
 
 PROXY = (
@@ -516,3 +516,45 @@ async def test_stop_finishes_when_a_radio_cannot_be_taken_back(runtime: Runtime,
 
     assert nodes.connection_of("kitchen").disconnected
     assert proxies(runtime) == [] and leaked_tasks() == []
+
+
+# A stop meeting a pairing in flight
+
+
+@pytest.fixture
+def slow_nodes(monkeypatch: pytest.MonkeyPatch) -> asyncio.Event:
+    """The nodes list their entities only once it is set: a pairing waits for its node meanwhile."""
+    answered = asyncio.Event()
+
+    async def list_entities_services(self: FakeAPIClient) -> tuple[list[Any], list[Any]]:
+        await answered.wait()
+        return [], []
+
+    monkeypatch.setattr(FakeAPIClient, "list_entities_services", list_entities_services)
+    return answered
+
+
+async def start_pairing(
+    controller: ESPhomeController, mdns: FakeMDNS, nodes: Nodes, node: str
+) -> tuple[Discovery, asyncio.Task[UUID | None]]:
+    """The user pairs the node; returns once the pairing waits for it."""
+    discovery = await announce(controller, mdns, node)
+    await hub_creates_device(controller.platform, discovery, name=node)
+    pairing = asyncio.create_task(controller.pair_device(discovery, None))
+    await wait_until(lambda: nodes.clients and nodes.clients[-1].on_stop, message="the node to answer the connect")
+    return discovery, pairing
+
+
+async def test_a_pairing_that_outlives_a_stop_is_refused_and_leaves_nothing_behind(
+    runtime: Runtime, esphome: ESPhomeController, mdns: FakeMDNS, nodes: Nodes, slow_nodes: asyncio.Event
+):
+    discovery, pairing = await start_pairing(esphome, mdns, nodes, "kitchen")
+
+    await runtime.disable(esphome)
+    slow_nodes.set()
+
+    with pytest.raises(ConnectionError, match="stopped"):
+        await pairing
+    assert esphome._connections == {} and nodes.connection_of("kitchen").disconnected
+    await assert_not_paired(esphome.platform, discovery.id)
+    assert leaked_tasks() == []

@@ -100,6 +100,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
         self._paired: set[UUID] = set()
         self._tasks: set[asyncio.Task[None]] = set()
         self._states: dict[UUID, dict[int, EntityState]] = {}
+        self._is_running = False  # from start() to stop(): a pairing still in flight after a stop adopts nothing
 
     @property
     def discoveries(self) -> dict[UUID, Discovery]:
@@ -119,6 +120,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
 
     async def start(self) -> None:
         logger.info("Starting ESPHome integration")
+        self._is_running = True
 
         zeroconf: Zeroconf = self.peripherals.instance("mdns")
         self._zeroconf_cancel = zeroconf.register(self, services={"_esphomelib._tcp.local."})
@@ -145,6 +147,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
 
     async def stop(self) -> None:
         logger.info("Stopping ESPHome integration")
+        self._is_running = False
         if self._zeroconf_cancel:
             self._zeroconf_cancel()
             self._zeroconf_cancel = None
@@ -474,6 +477,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
                 raise TimeoutError(f"The device joined {wifi.ssid} but did not show up on the network") from None
             finally:
                 self._joining.pop(node.name, None)
+            self._refuse_if_stopped()
             async with self.platform.device_repository(self) as repo:
                 await repo.save(hub_device.model_copy(update={"id": on_network.id}), previous_id=discovery.id)
             await self._pair_over_api(on_network, credentials=None)
@@ -563,9 +567,11 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
                 }
             )
 
+            self._refuse_if_stopped()
             async with self.platform.device_repository(self) as repo:
                 await repo.save(device)
 
+            self._refuse_if_stopped()  # it stopped while the device was saved
             self._connections[discovery.id] = conn
             self._paired.add(discovery.id)
 
@@ -579,11 +585,17 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
                 await conn.stop()
             self._states.pop(discovery.id, None)
             logger.exception("Pairing %s failed", discovery.id)
-            reason = str(exc) if isinstance(exc, ValueError | LookupError) else describe_error(exc.__cause__ or exc)
-            failed = known.model_copy(update={"last_error": reason})
-            self._discoveries[discovery.id] = failed
-            await self.output.controller_did_update_discovery(self, failed)
+            if self._is_running:  # a stopped controller offers nothing
+                reason = str(exc) if isinstance(exc, ValueError | LookupError) else describe_error(exc.__cause__ or exc)
+                failed = known.model_copy(update={"last_error": reason})
+                self._discoveries[discovery.id] = failed
+                await self.output.controller_did_update_discovery(self, failed)
             raise
+
+    def _refuse_if_stopped(self):
+        """A pairing that finishes after stop() takes nothing: the next start() connects what is paired anew."""
+        if not self._is_running:
+            raise ConnectionError("ESPHome stopped while pairing")
 
     def _build_parameter(
         self, device_id: UUID, entity: EntityInfo, component: str, spec: ParameterSpec, parent: str | None = None
