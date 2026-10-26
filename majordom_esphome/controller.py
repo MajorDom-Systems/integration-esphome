@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import json
 import logging
-import os
 import secrets
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
@@ -24,6 +22,7 @@ from majordom_integration_sdk import (
     WifiCredentials,
 )
 from majordom_integration_sdk.capabilities import BLEDiscoveryInfo, BLERouter, Zeroconf, ZeroconfDiscoveryInfo
+from majordom_integration_sdk.files import read_json, write_json
 from majordom_integration_sdk.peripherals import BLEProxy
 from majordom_integration_sdk.schemas import (
     CredentialsType,
@@ -49,19 +48,6 @@ from .models import (
 logger = logging.getLogger(__name__)
 
 NODE_APPEAR_TIMEOUT = 60.0  # seconds for a node to announce itself over mDNS once it has joined Wi-Fi
-
-
-def _read_keys(path: Path) -> dict[str, str]:
-    return json.loads(path.read_text()) if path.exists() else {}
-
-
-def _write_keys(path: Path, keys: dict[str, str]):
-    """Whole or not at all, for the Hub's user alone."""
-    written = path.with_name(f"{path.name}.tmp")
-    written.touch(mode=0o600)
-    written.chmod(0o600)  # one a crash left keeps its mode
-    written.write_text(json.dumps(keys))
-    os.replace(written, path)
 
 
 @dataclass
@@ -429,12 +415,12 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
         """The key given to the node with ``mac``, kept apart from the Hub's device record too: the Hub deletes the
         record when a pairing fails, and after unpairing it, though the node requires the key from then on. Forgotten
         only once the node is paired with a key the user typed (it was reflashed with one of its own)."""
-        return _read_keys(self._keys_file).get(mac) if mac else None
+        return read_json(self._keys_file).get(mac) if mac else None
 
     def _forget_given_key(self, mac: str | None):
-        keys = _read_keys(self._keys_file)
+        keys = read_json(self._keys_file)
         if keys.pop(mac or "", None):
-            _write_keys(self._keys_file, keys)
+            write_json(self._keys_file, keys)
 
     async def _provision_key(self, conn: ESPhomeDeviceConnection, data: _DiscoveryData, key: str | None) -> str:
         """Give a keyless node a key of our own (or the one kept from an earlier attempt). It is kept before it is
@@ -442,7 +428,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
         key = key or base64.b64encode(secrets.token_bytes(32)).decode()
         await self._save_integration_data(conn.device_id, encryption_key=key)
         if data.mac:
-            _write_keys(self._keys_file, {**_read_keys(self._keys_file), data.mac: key})
+            write_json(self._keys_file, {**read_json(self._keys_file), data.mac: key})
         await conn.provision_key(key, ZERO_NOISE_PSK if data.zero_psk else None)
         data.keyless = False  # whatever mDNS still announces, the node requires the key now
         return key
