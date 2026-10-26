@@ -68,6 +68,7 @@ class ESPhomeBLESource:
             uuids = sorted({*before.service_uuids, *uuids})
             service_data = before.service_data | service_data
             manufacturer_data = before.manufacturer_data | manufacturer_data
+            tx_power = before.tx_power if tx_power is None else tx_power
         adv = AdvertisementData(name, dict(manufacturer_data), dict(service_data), list(uuids), tx_power, rssi, ())
         self._heard[address] = adv, address_type
         if len(self._heard) > _REMEMBERED:

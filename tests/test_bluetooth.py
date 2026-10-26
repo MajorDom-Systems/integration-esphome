@@ -46,6 +46,7 @@ MATTER = "0000fff6-0000-1000-8000-00805f9b34fb"
 DEVICE = 0xAABBCCDDEEFF
 MATTER_ADV = bytes.fromhex("0b16f6ff00000fa1f7ff0180")  # service data: a commissionable Matter device
 NAME = bytes.fromhex("0509") + b"Bulb"  # scan response: complete local name
+TX_POWER = bytes.fromhex("020a08")  # 8 dBm
 NODES = {"kitchen": "11:22:33:44:55:01", "garage": "11:22:33:44:55:02"}  # node name -> its Bluetooth MAC
 
 
@@ -217,6 +218,18 @@ async def test_advertisements_and_scan_responses_merge_into_one_device(ble_and_n
     assert first.device.address == "AA:BB:CC:DD:EE:FF" and first.source == "esphome:11:22:33:44:55:66"
     assert second.advertisement.local_name == "Bulb"
     assert second.advertisement.service_data == {MATTER: bytes.fromhex("00000fa1f7ff0180")}
+
+
+async def test_a_scan_response_keeps_the_tx_power_its_advertisement_carried(ble_and_node):
+    ble, client = ble_and_node
+    listener = Listener()
+    ble.register(listener, {UUID(MATTER)})
+
+    client.advertise(MATTER_ADV + TX_POWER)
+    client.advertise(NAME)
+    await asyncio.sleep(0.01)
+
+    assert [info.advertisement.tx_power for info in listener.heard] == [8, 8]
 
 
 async def test_connects_and_speaks_gatt_by_handle(ble_and_node):
