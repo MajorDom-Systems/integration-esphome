@@ -161,7 +161,9 @@ class ESPhomeBLEConnection:
 async def ble_source_of(client: APIClient) -> ESPhomeBLESource | None:
     """The node's source, if it lends Bluetooth this hub can use."""
     info = await client.device_info()
-    features = BluetoothProxyFeature(info.bluetooth_proxy_feature_flags_compat(client.api_version))
+    if (version := client.api_version) is None:  # the connection closed meanwhile
+        return None
+    features = BluetoothProxyFeature(info.bluetooth_proxy_feature_flags_compat(version))
     if not features & BluetoothProxyFeature.RAW_ADVERTISEMENTS:  # firmware before 2023.? or no proxy
         return None
     return ESPhomeBLESource(client, info.bluetooth_mac_address or info.mac_address, features)

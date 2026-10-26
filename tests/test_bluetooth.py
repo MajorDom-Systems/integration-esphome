@@ -50,7 +50,7 @@ NODES = {"kitchen": "11:22:33:44:55:01", "garage": "11:22:33:44:55:02"}  # node 
 
 
 class FakeAPIClient:
-    api_version = APIVersion(1, 12)
+    api_version: APIVersion | None = APIVersion(1, 12)
 
     def __init__(
         self,
@@ -175,6 +175,13 @@ async def test_only_nodes_streaming_raw_advertisements_are_sources():
     assert await source_of(FakeAPIClient(features=0)) is None
     source = await source_of(FakeAPIClient())
     assert source and source.name == "esphome:11:22:33:44:55:66"
+
+
+async def test_a_node_that_closed_its_api_connection_meanwhile_lends_nothing():
+    client = FakeAPIClient()
+    client.api_version = None  # what the client knows once the connection closed
+
+    assert await source_of(client) is None
 
 
 async def test_advertisements_and_scan_responses_merge_into_one_device(ble_and_node):
