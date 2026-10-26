@@ -264,6 +264,26 @@ async def test_a_lease_mutes_a_lent_node_and_resumes_it_without_unsubscribing():
     await ble.stop()
 
 
+async def test_a_node_hears_again_after_a_router_restart_cut_its_lease_short():
+    """The router stops while the node is leased (a restart, a failed hook): the release can't resume it then."""
+    client = FakeAPIClient()
+    source = await source_of(client)
+    assert source
+    ble = BLEService(sources=[source])
+    await ble.start()
+    listener = Listener()
+    ble.register(listener, {UUID(MATTER)})
+
+    async with ble.exclusive("AA:BB:CC:DD:EE:FF", owner="esphome-improv"):
+        await ble.stop()
+    await ble.start()
+    client.advertise(MATTER_ADV)
+    await asyncio.sleep(0.01)
+
+    assert len(listener.heard) == 1, "a started source hears"
+    await ble.stop()
+
+
 async def test_a_node_says_how_many_connections_it_can_still_open(ble_and_node):
     _, client = ble_and_node
     source = await source_of(client)
