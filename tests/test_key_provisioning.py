@@ -6,11 +6,14 @@ requires it. The user never types (or sees) a key.
 
 import asyncio
 import base64
+import json
 import logging
 from collections.abc import AsyncIterator, Callable, Coroutine
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 from unittest.mock import patch
+from uuid import UUID
 
 import pytest
 import pytest_asyncio
@@ -21,9 +24,10 @@ from aioesphomeapi import (
     EntityInfo,
     InvalidEncryptionKeyAPIError,
 )
+from majordom_integration_sdk import Platform
 from majordom_integration_sdk.schemas import CredentialsType, ProvidedCredentials
 from majordom_integration_sdk.schemas.device import Discovery
-from majordom_integration_sdk.testing import RecordingControllerOutput
+from majordom_integration_sdk.testing import RecordingControllerOutput, build_test_platform
 
 from majordom_esphome.controller import ESPhomeController
 from majordom_esphome.models import ESPhomeDevice
@@ -35,6 +39,17 @@ pytestmark = pytest.mark.timeout(60)
 
 NEW_KEY = base64.b64encode(bytes(range(32))).decode()  # set in the YAML of a reflashed node
 KEYLESS_ADVERT = Advert(name=KEYLESS.name, mac=KEYLESS.mac, port=KEYLESS.port, keyless=True)
+
+
+@pytest.fixture
+def store() -> dict[UUID, dict[str, Any]]:
+    """The Hub's device records: a test deletes one as the Hub does."""
+    return {}
+
+
+@pytest.fixture
+def platform(store: dict[UUID, dict[str, Any]], tmp_path: Path) -> Platform:
+    return build_test_platform(tmp_path, store=store)
 
 
 @pytest_asyncio.fixture
@@ -271,6 +286,50 @@ async def test_a_key_set_before_a_failed_reconnect_is_kept_for_the_retry_even_ac
         assert restarted.discoveries == {}
     finally:
         await restarted.stop()
+
+
+async def test_a_key_set_before_a_pairing_the_hub_gave_up_on_is_kept_for_the_retry(
+    controller: ESPhomeController, mdns: FakeMDNS, node: FakeNode, store: dict[UUID, dict[str, Any]]
+):
+    """The Hub deletes its device record when a pairing fails, though the node requires the key from then on."""
+    node.reachable_with_key = False
+    found = await discover(controller, mdns, Advert(keyless=True))
+    await hub_creates_device(controller.platform, found)
+    with pytest.raises(ConnectionError):
+        await controller.pair_device(found, credentials=None)
+    del store[found.id]
+    node.reachable_with_key = True
+
+    again = await discover(controller, mdns, Advert(encrypted=True))
+    assert again.expected_credentials_options == [CredentialsType.none, CredentialsType.secret]
+    await hub_creates_device(controller.platform, again)
+    await controller.pair_device(again, credentials=None)
+
+    assert (await stored(controller, found.id)).integration_data.encryption_key == node.key
+    assert node.set_key_sessions == [ZERO_NOISE_PSK], "the node already has the key: it is not set twice"
+
+
+async def test_a_given_key_is_kept_by_the_nodes_mac_for_the_hub_alone(
+    controller: ESPhomeController, mdns: FakeMDNS, node: FakeNode
+):
+    found = await discover(controller, mdns, Advert(keyless=True))
+    await hub_creates_device(controller.platform, found)
+
+    await controller.pair_device(found, credentials=None)
+
+    kept = controller.platform.documents_folder(controller) / "keys.json"
+    assert json.loads(kept.read_text()) == {"983569abf679": node.key}
+    assert kept.stat().st_mode & 0o777 == 0o600
+
+
+async def test_unpairing_forgets_the_given_key(controller: ESPhomeController, mdns: FakeMDNS, node: FakeNode):
+    found = await discover(controller, mdns, Advert(keyless=True))
+    await hub_creates_device(controller.platform, found)
+    await controller.pair_device(found, credentials=None)
+
+    await controller.unpair(await stored(controller, found.id))
+
+    assert json.loads((controller.platform.documents_folder(controller) / "keys.json").read_text()) == {}
 
 
 async def test_a_retry_before_the_node_announces_its_key_does_not_set_it_again(

@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import logging
+import os
 import secrets
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from uuid import UUID
 
@@ -46,6 +49,19 @@ from .models import (
 logger = logging.getLogger(__name__)
 
 NODE_APPEAR_TIMEOUT = 60.0  # seconds for a node to announce itself over mDNS once it has joined Wi-Fi
+
+
+def _read_keys(path: Path) -> dict[str, str]:
+    return json.loads(path.read_text()) if path.exists() else {}
+
+
+def _write_keys(path: Path, keys: dict[str, str]):
+    """Whole or not at all, for the Hub's user alone."""
+    written = path.with_name(f"{path.name}.tmp")
+    written.touch(mode=0o600)
+    written.chmod(0o600)  # one a crash left keeps its mode
+    written.write_text(json.dumps(keys))
+    os.replace(written, path)
 
 
 @dataclass
@@ -213,7 +229,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
             # Even then the user may enter one: the node may have been reflashed with a key of its own since.
             if "api_encryption" not in properties:
                 credentials_options = [CredentialsType.none]
-            elif await self._kept_key(device_id) is None:
+            elif await self._kept_key(device_id, mac) is None:
                 credentials_options = [CredentialsType.secret]
             else:
                 credentials_options = [CredentialsType.none, CredentialsType.secret]
@@ -402,15 +418,26 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
                 await repo.save(device)
             return device
 
-    async def _kept_key(self, device_id: UUID) -> str | None:
+    async def _kept_key(self, device_id: UUID, mac: str | None) -> str | None:
         device = await self._update_device(device_id)
-        return device.integration_data.encryption_key if device is not None else None
+        return (device.integration_data.encryption_key if device is not None else None) or self._given_key(mac)
+
+    @property
+    def _keys_file(self) -> Path:
+        return self.platform.documents_folder(self) / "keys.json"
+
+    def _given_key(self, mac: str | None) -> str | None:
+        """The key given to the node with ``mac``, kept apart from the Hub's device record too: the Hub deletes the
+        record when a pairing fails, though the node requires the key from then on. Forgotten on unpair."""
+        return _read_keys(self._keys_file).get(mac) if mac else None
 
     async def _provision_key(self, conn: ESPhomeDeviceConnection, data: _DiscoveryData, key: str | None) -> str:
         """Give a keyless node a key of our own (or the one kept from an earlier attempt). It is kept before it is
         set: from then on the node accepts nothing else, so losing it would lock the Hub out until a factory reset."""
         key = key or base64.b64encode(secrets.token_bytes(32)).decode()
         await self._save_integration_data(conn.device_id, encryption_key=key)
+        if data.mac:
+            _write_keys(self._keys_file, {**_read_keys(self._keys_file), data.mac: key})
         await conn.provision_key(key, ZERO_NOISE_PSK if data.zero_psk else None)
         data.keyless = False  # whatever mDNS still announces, the node requires the key now
         return key
@@ -572,7 +599,9 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
             if hub_device is None:
                 raise LookupError("The Hub has not created a device for this discovery")
 
-            encryption_key = encryption_key or hub_device.integration_data.encryption_key
+            encryption_key = (
+                encryption_key or hub_device.integration_data.encryption_key or self._given_key(integration_data.mac)
+            )
 
             conn = self._make_connection(
                 discovery.id, integration_data.addresses, integration_data.port, encryption_key
@@ -703,6 +732,9 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
         self._paired.discard(device.id)
         if connection:
             await connection.stop()
+        keys = _read_keys(self._keys_file)
+        if keys.pop(device.integration_data.mac_address or "", None):
+            _write_keys(self._keys_file, keys)
         # The Hub removes the device record after unpair; the repository protocol
         # intentionally does not expose delete() to integrations.
 
