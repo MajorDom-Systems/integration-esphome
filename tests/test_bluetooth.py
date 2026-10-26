@@ -687,6 +687,26 @@ async def test_a_failed_pairing_leaves_no_radio_lent(
     assert leaked_tasks() == []
 
 
+async def test_a_pairing_that_failed_once_connected_can_be_tried_again(
+    esphome: ESPhomeController,
+    mdns: FakeMDNS,
+    nodes: Nodes,
+    output: RecordingControllerOutput,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    discovery = await announce(esphome, mdns, "kitchen")
+    await hub_creates_device(esphome.platform, discovery, name="kitchen")
+    with monkeypatch.context() as hub:
+        hub.setattr(output, "controller_did_connect_device", AsyncMock(side_effect=RuntimeError("the Hub went away")))
+        with pytest.raises(RuntimeError):
+            await esphome.pair_device(discovery, None)
+
+    await esphome.pair_device(esphome.discoveries[discovery.id], None)
+
+    assert output.connected_devices == [discovery.id]
+    assert [client.disconnected for client in nodes.clients] == [True, False]
+
+
 async def test_a_node_whose_bluetooth_fails_to_set_up_stays_connected(
     esphome: ESPhomeController, mdns: FakeMDNS, nodes: Nodes, ble: BLEService, output: RecordingControllerOutput
 ):

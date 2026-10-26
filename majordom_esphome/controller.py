@@ -607,21 +607,17 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
             self._connections[discovery.id] = conn
             self._paired.add(discovery.id)
 
-            self._discoveries.pop(discovery.id, None)
-            self._discovery_data.pop(discovery.id, None)
             await self.output.controller_did_connect_device(self, discovery.id)
             await self._report_snapshot(discovery.id)
             await conn.report_client()  # paired: its radio may serve the hub now
+            self._discoveries.pop(discovery.id, None)
+            self._discovery_data.pop(discovery.id, None)
 
         except asyncio.CancelledError:  # no one waits for the outcome: let go of the node
-            if conn is not None:
-                await conn.stop()
-            self._states.pop(discovery.id, None)
+            await self._let_go_of_pairing(discovery.id, conn)
             raise
         except Exception as exc:
-            if conn is not None:
-                await conn.stop()
-            self._states.pop(discovery.id, None)
+            await self._let_go_of_pairing(discovery.id, conn)
             logger.exception(f"Pairing {discovery.id} failed")
             if self._is_running:  # a stopped controller offers nothing
                 reason = str(exc) if isinstance(exc, ValueError | LookupError) else describe_error(exc.__cause__ or exc)
@@ -629,6 +625,15 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
                 self._discoveries[discovery.id] = failed
                 await self.output.controller_did_update_discovery(self, failed)
             raise
+
+    async def _let_go_of_pairing(self, device_id: UUID, conn: ESPhomeDeviceConnection | None):
+        """Undo a pairing that didn't finish: its node connection goes, also once taken in, so it can be tried again."""
+        if conn is not None:
+            await conn.stop()
+            if self._connections.get(device_id) is conn:
+                del self._connections[device_id]
+                self._paired.discard(device_id)
+        self._states.pop(device_id, None)
 
     def _refuse_if_stopped(self):
         """A pairing that finishes after stop() takes nothing: the next start() connects what is paired anew."""
