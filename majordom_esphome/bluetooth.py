@@ -91,8 +91,6 @@ class ESPhomeBLESource:
         self._heard: dict[str, tuple[AdvertisementData, int]] = {}  # address -> merged advertisement, address type
 
     async def start(self, on_advertisement: OnAdvertisement):
-        self._paused = False  # a lease the router stopped under ends without resuming it
-
         def on_advertisements(response: BluetoothLERawAdvertisementsResponse):
             advertisements = response.advertisements
             for i in range(len(advertisements)):  # iterating the protobuf directly costs a debug log per batch

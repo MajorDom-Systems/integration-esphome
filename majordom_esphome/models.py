@@ -55,8 +55,6 @@ class ESPhomeParameterIntegrationData(BaseModel):
 
 
 class ESPhomeDevice(Device[ESPhomeDeviceIntegrationData]):
-    # empty until paired: the Hub creates the device without it
-    integration_data: ESPhomeDeviceIntegrationData = Field(default_factory=ESPhomeDeviceIntegrationData)
     parameters: list["ESPhomeParameter"] = Field(default_factory=list)
 
 
