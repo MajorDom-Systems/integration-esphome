@@ -6,7 +6,7 @@ and another one together.
 """
 
 import contextlib
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 
 from aioesphomeapi import (
     APIClient,
@@ -24,6 +24,54 @@ _PROPERTIES = {0x02: "read", 0x04: "write-without-response", 0x08: "write", 0x10
 _CCCD = "00002902-0000-1000-8000-00805f9b34fb"
 _CONNECTS = BluetoothProxyFeature.ACTIVE_CONNECTIONS | BluetoothProxyFeature.REMOTE_CACHING
 _REMEMBERED = 1024  # devices kept merged; phones rotate their address, so the oldest are dropped
+
+
+class ESPhomeBLEConnection:
+    def __init__(self, client: APIClient, address: int, mtu: int, unsubscribe: Callable[[], None]):
+        self._client, self._address, self.mtu, self._unsubscribe = client, address, mtu or 23, unsubscribe
+        self._services: list[BluetoothGATTService] | None = None
+        self._notifying: dict[int, Callable[[], Awaitable[None]]] = {}  # handle -> stop
+
+    async def _gatt_services(self) -> list[BluetoothGATTService]:
+        if self._services is None:  # the proxy forgets them once sent
+            self._services = (await self._client.bluetooth_gatt_get_services(self._address)).services
+        return self._services
+
+    async def services(self) -> list[GattService]:
+        return [
+            GattService(s.uuid, s.handle, tuple(
+                GattCharacteristic(c.uuid, c.handle, tuple(n for bit, n in _PROPERTIES.items() if c.properties & bit))
+                for c in s.characteristics
+            ))
+            for s in await self._gatt_services()
+        ]  # fmt: skip
+
+    async def read(self, handle: int) -> bytes:
+        return bytes(await self._client.bluetooth_gatt_read(self._address, handle))
+
+    async def write(self, handle: int, data: bytes, is_response_needed: bool = True):
+        await self._client.bluetooth_gatt_write(self._address, handle, data, is_response_needed)
+
+    async def start_notify(self, handle: int, callback: Callable[[bytes], None]):
+        characteristic = next(c for s in await self._gatt_services() for c in s.characteristics if c.handle == handle)
+        stop, _ = await self._client.bluetooth_gatt_start_notify(self._address, handle, lambda _, d: callback(bytes(d)))
+        self._notifying[handle] = stop
+        # the proxy leaves the client characteristic configuration to the client
+        if cccd := next((d.handle for d in characteristic.descriptors if d.uuid == _CCCD), None):
+            indicate = characteristic.properties & 0x20 and not characteristic.properties & 0x10
+            await self._client.bluetooth_gatt_write_descriptor(
+                self._address, cccd, b"\x02\x00" if indicate else b"\x01\x00"
+            )
+
+    async def stop_notify(self, handle: int):
+        if stop := self._notifying.pop(handle, None):
+            await stop()
+
+    async def disconnect(self):
+        # the library drops the notify handlers once told the device disconnected, which unsubscribing stops
+        self._client.bluetooth_gatt_stop_notify_for_address(self._address)
+        self._unsubscribe()
+        await self._client.bluetooth_device_disconnect(self._address)
 
 
 class ESPhomeBLESource:
@@ -90,7 +138,7 @@ class ESPhomeBLESource:
     async def resume_scanning(self):
         self._paused = False
 
-    async def connect(self, address: str, on_disconnect: Callable[[], None]) -> "ESPhomeBLEConnection":
+    async def connect(self, address: str, on_disconnect: Callable[[], None]) -> ESPhomeBLEConnection:
         if self._features & _CONNECTS != _CONNECTS:
             raise ConnectionError(f"{self.name} only listens")
         handle = int(address.replace(":", ""), 16)
@@ -109,54 +157,6 @@ class ESPhomeBLESource:
             unsubscribe()
             raise ConnectionError(f"{self.name} can't connect to {address} (error {error})")
         return ESPhomeBLEConnection(self._client, handle, mtu, unsubscribe)
-
-
-class ESPhomeBLEConnection:
-    def __init__(self, client: APIClient, address: int, mtu: int, unsubscribe: Callable[[], None]):
-        self._client, self._address, self.mtu, self._unsubscribe = client, address, mtu or 23, unsubscribe
-        self._services: list[BluetoothGATTService] | None = None
-        self._notifying: dict[int, Callable] = {}  # handle -> stop
-
-    async def _gatt_services(self) -> list[BluetoothGATTService]:
-        if self._services is None:  # the proxy forgets them once sent
-            self._services = (await self._client.bluetooth_gatt_get_services(self._address)).services
-        return self._services
-
-    async def services(self) -> list[GattService]:
-        return [
-            GattService(s.uuid, s.handle, tuple(
-                GattCharacteristic(c.uuid, c.handle, tuple(n for bit, n in _PROPERTIES.items() if c.properties & bit))
-                for c in s.characteristics
-            ))
-            for s in await self._gatt_services()
-        ]  # fmt: skip
-
-    async def read(self, handle: int) -> bytes:
-        return bytes(await self._client.bluetooth_gatt_read(self._address, handle))
-
-    async def write(self, handle: int, data: bytes, is_response_needed: bool = True):
-        await self._client.bluetooth_gatt_write(self._address, handle, data, is_response_needed)
-
-    async def start_notify(self, handle: int, callback: Callable[[bytes], None]):
-        characteristic = next(c for s in await self._gatt_services() for c in s.characteristics if c.handle == handle)
-        stop, _ = await self._client.bluetooth_gatt_start_notify(self._address, handle, lambda _, d: callback(bytes(d)))
-        self._notifying[handle] = stop
-        # the proxy leaves the client characteristic configuration to the client
-        if cccd := next((d.handle for d in characteristic.descriptors if d.uuid == _CCCD), None):
-            indicate = characteristic.properties & 0x20 and not characteristic.properties & 0x10
-            await self._client.bluetooth_gatt_write_descriptor(
-                self._address, cccd, b"\x02\x00" if indicate else b"\x01\x00"
-            )
-
-    async def stop_notify(self, handle: int):
-        if stop := self._notifying.pop(handle, None):
-            await stop()
-
-    async def disconnect(self):
-        # the library drops the notify handlers once told the device disconnected, which unsubscribing stops
-        self._client.bluetooth_gatt_stop_notify_for_address(self._address)
-        self._unsubscribe()
-        await self._client.bluetooth_device_disconnect(self._address)
 
 
 async def ble_source_of(client: APIClient) -> ESPhomeBLESource | None:

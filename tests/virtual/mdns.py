@@ -6,7 +6,7 @@ announcements are delivered on demand and nothing is ever sent to (or heard from
 
 import asyncio
 import socket
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any
@@ -131,7 +131,7 @@ async def settle() -> None:
 
 
 @contextmanager
-def fake_mdns() -> Iterator[FakeMDNS]:
+def fake_mdns() -> Generator[FakeMDNS]:
     fake = FakeMDNS()
     async_zeroconf = MagicMock(name="AsyncZeroconf")
     async_zeroconf.return_value.zeroconf = fake._zeroconf

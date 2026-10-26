@@ -6,7 +6,7 @@ import asyncio
 import base64
 import logging
 import secrets
-from collections.abc import Coroutine
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
@@ -92,8 +92,8 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
         self._discoveries: dict[UUID, Discovery] = {}
         self._discovery_data: dict[UUID, _DiscoveryData] = {}
         self._discovery_names: dict[str, UUID] = {}  # mDNS record name -> discovery id, for goodbyes
-        self._zeroconf_cancel: Any | None = None
-        self._ble_cancel: Any | None = None
+        self._zeroconf_cancel: Callable[[], None] | None = None
+        self._ble_cancel: Callable[[], None] | None = None
         self._improv_nodes: dict[UUID, _ImprovNode] = {}
         self._ble_names: dict[str, str] = {}  # BLE address -> advertised name: ESPHome sends it in few adverts
         self._joining: dict[str, asyncio.Future[Discovery]] = {}  # BLE name -> the node's mDNS discovery, once seen
