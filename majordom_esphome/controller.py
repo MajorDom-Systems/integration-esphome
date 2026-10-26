@@ -274,9 +274,12 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
         await self._on_improv_advert(info)
 
     async def ble_did_remove_device(self, ble: BLERouter, info: BLEDiscoveryInfo):
-        if self._ble_names.get(info.device.address) in self._joining:  # being set up: its radio is held, silenced
+        if self._ble_names.get(info.device.address) in self._joining:  # set up: it stops advertising once on Wi-Fi
             return
-        name = self._ble_names.pop(info.device.address, None)
+        await self._lose_improv_node(info.device.address)
+
+    async def _lose_improv_node(self, address: str):
+        name = self._ble_names.pop(address, None)
         device_id = self.device_uuid(f"improv:{name}") if name else None
         if device_id is not None and self._discoveries.pop(device_id, None) is not None:
             self._improv_nodes.pop(device_id, None)
@@ -539,6 +542,9 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
             logger.exception(f"Setting up {discovery.device_name} over BLE failed")
             reason = str(exc) if isinstance(exc, ValueError | LookupError | TimeoutError | improv.SetupError) else None
             await self._report_error(discovery.id, reason or describe_error(exc.__cause__ or exc))
+            router = self._router
+            if router is None or node.address not in {info.device.address for info in router.devices()}:
+                await self._lose_improv_node(node.address)  # its removal came while it was set up: none comes again
             raise
         self._discoveries.pop(discovery.id, None)
         self._improv_nodes.pop(discovery.id, None)

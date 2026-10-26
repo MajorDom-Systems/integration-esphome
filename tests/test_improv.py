@@ -398,23 +398,46 @@ async def test_a_node_waiting_for_its_button_tells_the_user_then_carries_on(
     assert node.received == [HOME]
 
 
+async def unheard_once_given_wifi(router: BLEService, node: FakeImprovNode):
+    """Given Wi-Fi, the node stops advertising Improv: the router says it is gone while it is awaited on the network."""
+    router._removal_grace_sec = 0.2
+    await wait_until(lambda: node.received, message="the node to be given Wi-Fi")
+    await asyncio.sleep(0.3)  # the lease ended, nothing heard since
+    await router.perform_scan()  # the eviction loop's check
+    assert router.devices() == []
+
+
 async def test_a_node_being_set_up_stays_offered_though_no_radio_hears_it(
-    controller: ESPhomeController, ble_discovery: Discovery, node: FakeImprovNode, output: RecordingControllerOutput
+    controller: ESPhomeController,
+    ble_discovery: Discovery,
+    node: FakeImprovNode,
+    router: BLEService,
+    output: RecordingControllerOutput,
 ):
-    """While the user walks to the node's button, the radio held for it is silenced: the router may say it is gone."""
-    node.state = State.AUTHORIZATION_REQUIRED
     pairing = asyncio.create_task(controller.pair_device(ble_discovery, credentials=None))
-    await wait_until(
-        lambda: "button" in (controller.discoveries[ble_discovery.id].last_error or ""), 5, "the instruction"
-    )
 
-    await controller.ble_did_remove_device(controller.peripherals.instance("ble"), node.info(named=False))
+    await unheard_once_given_wifi(router, node)
 
-    assert "button" in (controller.discoveries[ble_discovery.id].last_error or ""), "the instruction stays"
-    assert output.lost_discoveries == []
-    await node.press_button()
+    assert ble_discovery.id in controller.discoveries and output.lost_discoveries == []
     with pytest.raises(TimeoutError):  # given Wi-Fi, but it never shows up in this test
         await pairing
+
+
+async def test_a_failed_setup_loses_a_node_no_radio_hears_any_more(
+    controller: ESPhomeController,
+    ble_discovery: Discovery,
+    node: FakeImprovNode,
+    router: BLEService,
+    output: RecordingControllerOutput,
+):
+    """Its removal came while it was set up: none comes again."""
+    pairing = asyncio.create_task(controller.pair_device(ble_discovery, credentials=None))
+    await unheard_once_given_wifi(router, node)
+
+    with pytest.raises(TimeoutError):
+        await pairing
+
+    assert ble_discovery.id not in controller.discoveries and output.lost_discoveries == [ble_discovery.id]
 
 
 async def test_a_button_never_pressed_fails_with_the_instruction(
