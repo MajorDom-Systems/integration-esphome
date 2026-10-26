@@ -29,7 +29,7 @@ from majordom_integration_sdk.runtime.peripherals.providers.zeroconf import Zero
 from majordom_integration_sdk.schemas.device import Discovery
 from majordom_integration_sdk.testing import RecordingControllerOutput
 
-from majordom_esphome.bluetooth import ESPhomeBLESource, ble_source_of
+from majordom_esphome.bluetooth import ESPhomeBLEConnection, ESPhomeBLESource, ble_source_of
 from majordom_esphome.connection import WAIT_READY_TIMEOUT, ESPhomeDeviceConnection
 from majordom_esphome.controller import ESPhomeController
 from majordom_esphome.models import ESPhomeDevice
@@ -208,6 +208,36 @@ async def test_connects_and_speaks_gatt_by_handle(ble_and_node):
     await connection.start_notify(5, notes.append)
     client.on_notify(5, bytearray(b"ok"))
     assert client.writes == [(3, b"hs")] and client.descriptors == [(6, b"\x02\x00")] and notes == [b"ok"]
+
+
+async def test_a_closed_connection_leaves_no_notify_handler_on_the_node():
+    """The library cleans a device's notify handlers up only once told it disconnected, which the connection stops
+    listening for as it disconnects: a handler left behind would feed a later connection to the same handle."""
+    handlers: list[Callable[..., None]] = []
+
+    class NodeConnection:  # what the real client talks through
+        is_connected = True
+
+        def add_message_callback(self, callback: Callable[..., None], types: Any) -> Callable[[], None]:
+            handlers.append(callback)
+            return lambda: handlers.remove(callback)
+
+        def send_message(self, message: Any): ...
+
+    class Client(APIClient):
+        def _get_connection(self) -> Any:
+            return NodeConnection()
+
+    client = Client("node", 6053, None)
+    client._send_bluetooth_message_await_response = AsyncMock()
+    client._bluetooth_device_request = AsyncMock()
+    connection = ESPhomeBLEConnection(client, DEVICE, 247, lambda: None)
+    connection._services = [BluetoothGATTService(MATTER, 1, [BluetoothGATTCharacteristic(uuid="c", handle=5)])]
+    await connection.start_notify(5, lambda data: None)
+
+    await connection.disconnect()
+
+    assert handlers == []
 
 
 async def test_a_refused_connection_is_an_error(ble_and_node):

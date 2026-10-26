@@ -152,6 +152,8 @@ class ESPhomeBLEConnection:
             await stop()
 
     async def disconnect(self):
+        # the library drops the notify handlers once told the device disconnected, which unsubscribing stops
+        self._client.bluetooth_gatt_stop_notify_for_address(self._address)
         self._unsubscribe()
         await self._client.bluetooth_device_disconnect(self._address)
 
