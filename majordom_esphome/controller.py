@@ -580,6 +580,11 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
             await self.output.controller_did_connect_device(self, discovery.id)
             await self._report_snapshot(discovery.id)
 
+        except asyncio.CancelledError:  # no one waits for the outcome: let go of the node
+            if conn is not None:
+                await conn.stop()
+            self._states.pop(discovery.id, None)
+            raise
         except Exception as exc:
             if conn is not None:
                 await conn.stop()

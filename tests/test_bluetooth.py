@@ -581,3 +581,24 @@ async def test_a_stop_reaching_a_node_connection_from_inside_it_ends_it(
     await asyncio.sleep(1)  # past the reconnect delay
     assert esphome._connections == {} and len(nodes.clients) == opened, "a stopped controller doesn't reconnect"
     assert leaked_tasks() == []
+
+
+async def test_a_cancelled_pairing_lets_go_of_the_node(
+    runtime: Runtime,
+    esphome: ESPhomeController,
+    mdns: FakeMDNS,
+    nodes: Nodes,
+    ble: BLEService,
+    slow_nodes: asyncio.Event,
+):
+    discovery, pairing = await start_pairing(esphome, mdns, nodes, "kitchen")
+
+    pairing.cancel()  # the Hub's request went away
+    with pytest.raises(asyncio.CancelledError):
+        await pairing
+    slow_nodes.set()
+    await asyncio.sleep(0.1)
+
+    assert nodes.connection_of("kitchen").disconnected and sources(ble) == []
+    await assert_not_paired(esphome.platform, discovery.id)
+    assert leaked_tasks() == []
