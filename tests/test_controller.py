@@ -4,11 +4,12 @@ Entities are real `aioesphomeapi` descriptions (what a device actually reports),
 """
 
 from typing import Any
+from unittest.mock import AsyncMock
 from uuid import UUID
 
 import pytest
 from aioesphomeapi import CameraInfo, LightInfo, SwitchInfo
-from majordom_integration_sdk import Endpoint, PeripheralChange, Platform
+from majordom_integration_sdk import Endpoint, PeripheralChange, Peripherals, Platform
 from majordom_integration_sdk.schemas.command import DeviceCommand
 from majordom_integration_sdk.schemas.device import Discovery
 from majordom_integration_sdk.schemas.parameter import ParameterDataType, ParameterRole
@@ -18,7 +19,7 @@ import majordom_esphome
 from majordom_esphome.controller import ESPhomeController
 from majordom_esphome.models import ESPhomeDevice
 from tests.helpers import assert_not_paired, hub_creates_device, param
-from tests.virtual.mdns import Advert, FakeMDNS
+from tests.virtual.mdns import Advert, FakeMDNS, settle
 
 SWITCH_KEY = 7  # deliberately different from every other number in the tests
 
@@ -203,3 +204,29 @@ async def test_another_zeroconf_restarts_it(controller: ESPhomeController):
     moved = PeripheralChange("mdns", zeroconf, Endpoint("mdns", "zeroconf", "other", instance=zeroconf.instance))
 
     assert not await controller.needed_peripheral_did_change(moved)
+
+
+async def test_a_start_cut_short_stops_cleanly_and_starts_again(
+    deps: Platform,
+    peripherals: Peripherals,
+    output: RecordingControllerOutput,
+    mdns: FakeMDNS,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    controller = ESPhomeController(deps)
+    controller.peripherals, controller.output = peripherals, output
+    monkeypatch.setattr(ESPhomeController, "_load_paired_devices", AsyncMock(side_effect=RuntimeError("no database")))
+    with pytest.raises(RuntimeError):
+        await controller.start()
+
+    await controller.stop()  # as the runtime does after a failed start, keeping the instance
+    await settle()
+    assert [browser for browser in mdns.browsers if not browser.cancelled] == []
+    monkeypatch.undo()
+
+    await controller.start()
+    try:
+        await mdns.announce(Advert())
+        assert len(controller.discoveries) == 1
+    finally:
+        await controller.stop()

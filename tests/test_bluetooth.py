@@ -21,13 +21,13 @@ from aioesphomeapi.model import (
     BluetoothGATTService,
     ESPHomeBluetoothGATTServices,
 )
-from majordom_integration_sdk import Platform
+from majordom_integration_sdk import Endpoint, Platform
 from majordom_integration_sdk.peripherals import BLEProxy, Peripherals
 from majordom_integration_sdk.runtime import PeripheralState, Runtime
 from majordom_integration_sdk.runtime.peripherals.providers.ble.router import BLEService
 from majordom_integration_sdk.runtime.peripherals.providers.zeroconf import ZeroconfDiscoveryService
 from majordom_integration_sdk.schemas.device import Discovery
-from majordom_integration_sdk.testing import RecordingControllerOutput
+from majordom_integration_sdk.testing import FakePeripheral, RecordingControllerOutput
 
 from majordom_esphome.bluetooth import ESPhomeBLEConnection, ESPhomeBLESource, ble_source_of
 from majordom_esphome.connection import WAIT_READY_TIMEOUT, ESPhomeDeviceConnection
@@ -803,3 +803,33 @@ async def test_a_restarted_controller_reports_what_it_hears_again(
     await announce(esphome, mdns, "kitchen")  # heard anew
 
     assert len(output.received_discoveries) == 2
+
+
+# Routers coming later
+
+
+async def test_a_bluetooth_router_starting_later_is_taken_in_place(
+    runtime: Runtime, esphome: ESPhomeController, mdns: FakeMDNS, nodes: Nodes, ble: BLEService
+):
+    await runtime.disable(ble)
+    await pair(esphome, mdns, "kitchen")
+    opened = len(nodes.clients)
+
+    await runtime.enable(ble)
+
+    await wait_until(lambda: sources(ble) == [lent("kitchen")], message="the node to be lent to it")
+    assert runtime.status(esphome).state == PeripheralState.RUNNING
+    assert len(nodes.clients) == opened, "ESPHome kept its node connections"
+
+
+async def test_a_border_router_coming_later_is_taken_in_place(
+    runtime: Runtime, esphome: ESPhomeController, mdns: FakeMDNS, nodes: Nodes
+):
+    await pair(esphome, mdns, "kitchen")
+    opened = len(nodes.clients)
+
+    await runtime.add(FakePeripheral("otbr", provides=[Endpoint("thread", "otbr-rest", "http://otbr:8081")]))
+
+    await wait_until(lambda: "thread" in esphome.peripherals.bound, message="the border router to be handed over")
+    assert runtime.status(esphome).state == PeripheralState.RUNNING
+    assert len(nodes.clients) == opened, "ESPHome kept its node connections"
