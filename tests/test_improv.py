@@ -355,6 +355,25 @@ async def test_a_node_waiting_for_its_button_tells_the_user_then_carries_on(
     assert node.received == [HOME]
 
 
+async def test_a_node_being_set_up_stays_offered_though_no_radio_hears_it(
+    controller: ESPhomeController, ble_discovery: Discovery, node: FakeImprovNode, output: RecordingControllerOutput
+):
+    """While the user walks to the node's button, the radio held for it is silenced: the router may say it is gone."""
+    node.state = State.AUTHORIZATION_REQUIRED
+    pairing = asyncio.create_task(controller.pair_device(ble_discovery, credentials=None))
+    await wait_until(
+        lambda: "button" in (controller.discoveries[ble_discovery.id].last_error or ""), 5, "the instruction"
+    )
+
+    await controller.ble_did_remove_device(controller.peripherals.instance("ble"), node.info(named=False))
+
+    assert "button" in (controller.discoveries[ble_discovery.id].last_error or ""), "the instruction stays"
+    assert output.lost_discoveries == []
+    await node.press_button()
+    with pytest.raises(TimeoutError):  # given Wi-Fi, but it never shows up in this test
+        await pairing
+
+
 async def test_a_button_never_pressed_fails_with_the_instruction(
     controller: ESPhomeController, ble_discovery: Discovery, node: FakeImprovNode, output: RecordingControllerOutput
 ):

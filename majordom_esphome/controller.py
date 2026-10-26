@@ -247,6 +247,8 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
         await self._on_improv_advert(info)
 
     async def ble_did_remove_device(self, ble: BLERouter, info: BLEDiscoveryInfo) -> None:
+        if self._ble_names.get(info.device.address) in self._joining:  # being set up: its radio is held, silenced
+            return
         name = self._ble_names.pop(info.device.address, None)
         device_id = self.device_uuid(f"improv:{name}") if name else None
         if device_id is not None and self._discoveries.pop(device_id, None) is not None:
