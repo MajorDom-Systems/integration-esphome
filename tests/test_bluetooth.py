@@ -590,6 +590,20 @@ async def test_nothing_is_lent_while_the_setting_is_off(
     assert sources(ble) == [] and esphome.provides == []
 
 
+async def test_turning_the_proxies_off_restarts_it_and_takes_every_radio_back(
+    runtime: Runtime, esphome: ESPhomeController, mdns: FakeMDNS, nodes: Nodes, ble: BLEService
+):
+    await pair(esphome, mdns, "kitchen")
+    await wait_until(lambda: sources(ble) == [lent("kitchen")], message="the node to be lent")
+    first = nodes.connection_of("kitchen")
+
+    await runtime.update_settings(esphome, {"is_bluetooth_proxy_enabled": False})
+
+    await wait_until(lambda: nodes.connection_of("kitchen") is not first, message="the node to reconnect")
+    await asyncio.sleep(0.05)
+    assert sources(ble) == [] and proxies(runtime) == []
+
+
 async def test_unpairing_a_node_takes_back_only_its_radio(
     esphome: ESPhomeController, mdns: FakeMDNS, nodes: Nodes, ble: BLEService
 ):
