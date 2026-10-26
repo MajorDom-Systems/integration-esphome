@@ -658,3 +658,32 @@ async def test_nodes_are_heard_after_dns_sd_restarts(runtime: Runtime, esphome: 
     await wait_until(lambda: runtime.status(esphome).state == PeripheralState.RUNNING, message="ESPHome to run")
 
     assert await announce(esphome, mdns, "kitchen"), "a node announced after the restart is discovered"
+
+
+# Discoveries across a stop
+
+
+async def test_a_stopped_controller_offers_nothing_to_pair(
+    runtime: Runtime, esphome: ESPhomeController, mdns: FakeMDNS, nodes: Nodes
+):
+    discovery = await announce(esphome, mdns, "kitchen")
+    await hub_creates_device(esphome.platform, discovery, name="kitchen")
+
+    await runtime.disable(esphome)
+
+    assert esphome.discoveries == {}
+    with pytest.raises(ValueError, match="no longer discovered"):
+        await esphome.pair_device(discovery, None)
+    assert esphome._connections == {} and nodes.clients == []
+
+
+async def test_a_restarted_controller_reports_what_it_hears_again(
+    runtime: Runtime, esphome: ESPhomeController, mdns: FakeMDNS, output: RecordingControllerOutput
+):
+    await announce(esphome, mdns, "kitchen")
+
+    await runtime.restart(esphome)
+    await wait_until(lambda: runtime.status(esphome).state == PeripheralState.RUNNING, message="ESPHome to run")
+    await announce(esphome, mdns, "kitchen")  # heard anew
+
+    assert len(output.received_discoveries) == 2

@@ -166,6 +166,12 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
             await self._on_client(device_id, None)
         self._states.clear()
         self._paired.clear()
+        # heard anew after a start, which reports them again; a node that left meanwhile says no goodbye
+        self._discoveries.clear()
+        self._discovery_data.clear()
+        self._discovery_names.clear()
+        self._improv_nodes.clear()
+        self._ble_names.clear()
 
     # ZeroconfDiscoveryListener: called by the SDK's discovery service
 
