@@ -399,7 +399,7 @@ async def test_a_lent_radio_is_a_proxy_esphome_brings_along(runtime: Runtime, es
     await pair(esphome, mdns, "kitchen")
     await wait_until(lambda: len(esphome.provides) == 1, message="the node to be lent")
 
-    proxy = runtime.peripheral(f"esphome/{lent('kitchen')}")
+    proxy = runtime.peripheral(f"esphome/{NODES['kitchen']}")  # known by its Bluetooth MAC
     assert isinstance(proxy, BLEProxy) and proxy.contributor is esphome
     assert runtime.status(proxy).state == PeripheralState.RUNNING
 

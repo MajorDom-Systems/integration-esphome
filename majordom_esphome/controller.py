@@ -349,7 +349,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
         if self._proxies.pop(device_id, None):
             await self.output.controller_did_change_provided(self)
         if client is not None and (source := await ble_source_of(client)):
-            self._proxies[device_id] = BLEProxy(source)
+            self._proxies[device_id] = BLEProxy(source, name=source.mac)
             await self.output.controller_did_change_provided(self)
 
     async def _on_addresses(self, device_id: UUID, addresses: list[str]) -> None:

@@ -30,8 +30,9 @@ class ESPhomeBLESource:
     """An ESPHome node lends its Bluetooth radio to the hub: what it hears and the connections it makes become one
     more source of the hub's Bluetooth router, offered to it as ``ble/esphome-proxy``."""
 
-    def __init__(self, client: APIClient, name: str, features: BluetoothProxyFeature):
-        self.name = f"esphome:{name}"
+    def __init__(self, client: APIClient, mac: str, features: BluetoothProxyFeature):
+        self.mac = mac  # of its Bluetooth radio
+        self.name = f"esphome:{mac}"
         self._client, self._features = client, features
         self._unsubscribe: Callable[[], None] | None = None
         self._unsubscribe_slots: Callable[[], None] | None = None
