@@ -322,14 +322,46 @@ async def test_a_given_key_is_kept_by_the_nodes_mac_for_the_hub_alone(
     assert kept.stat().st_mode & 0o777 == 0o600
 
 
-async def test_unpairing_forgets_the_given_key(controller: ESPhomeController, mdns: FakeMDNS, node: FakeNode):
+async def test_a_given_key_outlasts_a_hard_delete_so_the_node_pairs_again_without_one(
+    controller: ESPhomeController, mdns: FakeMDNS, node: FakeNode, store: dict[UUID, dict[str, Any]]
+):
+    """The Hub unpairs a node, then deletes its record: the node still requires the key, the user never saw it."""
     found = await discover(controller, mdns, Advert(keyless=True))
     await hub_creates_device(controller.platform, found)
     await controller.pair_device(found, credentials=None)
-
+    given = node.key
     await controller.unpair(await stored(controller, found.id))
+    del store[found.id]
 
-    assert json.loads((controller.platform.documents_folder(controller) / "keys.json").read_text()) == {}
+    again = await discover(controller, mdns, Advert(encrypted=True))
+    assert again.expected_credentials_options == [CredentialsType.none, CredentialsType.secret]
+    await hub_creates_device(controller.platform, again)
+    await controller.pair_device(again, credentials=None)
+
+    assert (await stored(controller, found.id)).integration_data.encryption_key == given
+    assert node.set_key_sessions == [ZERO_NOISE_PSK], "the node already has the key: it is not set twice"
+
+
+async def test_pairing_with_a_key_the_user_typed_forgets_the_given_one(
+    controller: ESPhomeController, mdns: FakeMDNS, node: FakeNode
+):
+    """The node was reflashed with a key of its own: the given one is stale once the typed one is proven, not before."""
+    found = await discover(controller, mdns, Advert(keyless=True))
+    await hub_creates_device(controller.platform, found)
+    await controller.pair_device(found, credentials=None)
+    await controller.unpair(await stored(controller, found.id))
+    node.key = NEW_KEY
+    kept = controller.platform.documents_folder(controller) / "keys.json"
+
+    again = await discover(controller, mdns, Advert(encrypted=True))
+    with pytest.raises(ConnectionError):
+        await controller.pair_device(again, ProvidedCredentials(type=CredentialsType.secret, value=NEW_KEY[::-1]))
+    assert json.loads(kept.read_text()) != {}, "a mistyped key proves nothing"
+    await controller.pair_device(
+        controller.discoveries[again.id], ProvidedCredentials(type=CredentialsType.secret, value=NEW_KEY)
+    )
+
+    assert json.loads(kept.read_text()) == {}
 
 
 async def test_a_retry_before_the_node_announces_its_key_does_not_set_it_again(

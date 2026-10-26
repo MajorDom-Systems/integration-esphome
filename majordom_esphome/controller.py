@@ -427,8 +427,14 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
 
     def _given_key(self, mac: str | None) -> str | None:
         """The key given to the node with ``mac``, kept apart from the Hub's device record too: the Hub deletes the
-        record when a pairing fails, though the node requires the key from then on. Forgotten on unpair."""
+        record when a pairing fails, and after unpairing it, though the node requires the key from then on. Forgotten
+        only once the node is paired with a key the user typed (it was reflashed with one of its own)."""
         return _read_keys(self._keys_file).get(mac) if mac else None
+
+    def _forget_given_key(self, mac: str | None):
+        keys = _read_keys(self._keys_file)
+        if keys.pop(mac or "", None):
+            _write_keys(self._keys_file, keys)
 
     async def _provision_key(self, conn: ESPhomeDeviceConnection, data: _DiscoveryData, key: str | None) -> str:
         """Give a keyless node a key of our own (or the one kept from an earlier attempt). It is kept before it is
@@ -650,6 +656,8 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
             self._refuse_if_stopped(run)  # it stopped while the device was saved
             self._connections[discovery.id] = conn
             self._paired.add(discovery.id)
+            if credentials_type == CredentialsType.secret:
+                self._forget_given_key(integration_data.mac)
 
             await self.output.controller_did_connect_device(self, discovery.id)
             await self._report_snapshot(discovery.id)
@@ -737,9 +745,6 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
         self._paired.discard(device.id)
         if connection:
             await connection.stop()
-        keys = _read_keys(self._keys_file)
-        if keys.pop(device.integration_data.mac_address or "", None):
-            _write_keys(self._keys_file, keys)
         # The Hub removes the device record after unpair; the repository protocol
         # intentionally does not expose delete() to integrations.
 
