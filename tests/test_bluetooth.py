@@ -501,7 +501,7 @@ def settings() -> ESPhomeController.Settings:
 
 @pytest.fixture
 async def runtime(
-    deps: Platform,
+    platform: Platform,
     settings: ESPhomeController.Settings,
     ble: BLEService,
     nodes: Nodes,
@@ -510,8 +510,8 @@ async def runtime(
     tmp_path: Path,
 ) -> AsyncIterator[Runtime]:
     """ESPHome run as by the Hub, beside the Bluetooth router and DNS-SD it binds."""
-    peripherals = [ble, ZeroconfDiscoveryService(), ESPhomeController(deps, settings=settings)]
-    runtime = Runtime(tmp_path / "data", peripherals, platform=deps, controller_output=output)
+    peripherals = [ble, ZeroconfDiscoveryService(), ESPhomeController(platform, settings=settings)]
+    runtime = Runtime(tmp_path / "data", peripherals, platform=platform, controller_output=output)
     await runtime.start()
     await wait_until(lambda: all(runtime.status(p).state == PeripheralState.RUNNING for p in runtime.peripherals))
     yield runtime

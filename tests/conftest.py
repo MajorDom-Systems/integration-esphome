@@ -56,7 +56,7 @@ def mdns() -> Iterator[FakeMDNS]:
 
 
 @pytest.fixture
-def deps() -> Platform:
+def platform() -> Platform:
     return build_test_platform()
 
 
@@ -81,9 +81,9 @@ def output() -> RecordingControllerOutput:
 
 @pytest_asyncio.fixture
 async def controller(
-    deps: Platform, peripherals: Peripherals, output: RecordingControllerOutput
+    platform: Platform, peripherals: Peripherals, output: RecordingControllerOutput
 ) -> AsyncIterator[ESPhomeController]:
-    ctrl = ESPhomeController(deps)
+    ctrl = ESPhomeController(platform)
     ctrl.peripherals = peripherals
     ctrl.output = output
     await ctrl.start()

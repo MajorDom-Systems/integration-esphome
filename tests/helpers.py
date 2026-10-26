@@ -18,10 +18,10 @@ from majordom_esphome.models import ESPhomeDevice, ESPhomeDeviceIntegrationData,
 ROOM = UUID(int=42)
 
 
-async def hub_creates_device(deps: Platform, discovery: Discovery, name: str = "Kitchen relay", room: UUID = ROOM):
+async def hub_creates_device(platform: Platform, discovery: Discovery, name: str = "Kitchen relay", room: UUID = ROOM):
     """What the Hub does when the user picks a discovery: it creates the device (name, room) *before* asking the
     integration to pair (`DeviceProvider.create_device`). The integration completes that device."""
-    async with deps.make_device_repository(discovery.integration) as repo:
+    async with platform.make_device_repository(discovery.integration) as repo:
         await repo.save(
             Device(
                 id=discovery.id,
@@ -121,10 +121,10 @@ def leaked_tasks() -> list[asyncio.Task[Any]]:
     return leaked
 
 
-async def assert_not_paired(deps: Platform, device_id: UUID, kept_key: bool = False):
+async def assert_not_paired(platform: Platform, device_id: UUID, kept_key: bool = False):
     """A failed pairing leaves the device as the Hub created it: no parameters, no connection data, except (`kept_key`)
     the key the integration already set on the node, kept so the node is not locked out of the next attempt."""
-    async with deps.make_device_repository(ESPhomeController.slug()) as repo:
+    async with platform.make_device_repository(ESPhomeController.slug()) as repo:
         device = await repo.get(device_id, as_=ESPhomeDevice)
     assert device is not None, "the device the Hub created must not be deleted by the integration"
     assert device.parameters == []

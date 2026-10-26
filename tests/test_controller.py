@@ -185,10 +185,10 @@ def test_it_needs_zeroconf_and_borrows_the_router_never_raw_bluetooth():
     assert not needs["ble"].accepts(Endpoint("ble", "bluez", "hci0"))
 
 
-def test_the_package_provides_its_controller_alone(deps: Platform):
-    (controller,) = majordom_esphome.peripherals(deps)
+def test_the_package_provides_its_controller_alone(platform: Platform):
+    (controller,) = majordom_esphome.peripherals(platform)
 
-    assert isinstance(controller, ESPhomeController) and controller.platform is deps
+    assert isinstance(controller, ESPhomeController) and controller.platform is platform
     assert (controller.name, controller.key) == ("ESPHome", "esphome")
 
 
@@ -207,13 +207,13 @@ async def test_another_zeroconf_restarts_it(controller: ESPhomeController):
 
 
 async def test_a_start_cut_short_stops_cleanly_and_starts_again(
-    deps: Platform,
+    platform: Platform,
     peripherals: Peripherals,
     output: RecordingControllerOutput,
     mdns: FakeMDNS,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    controller = ESPhomeController(deps)
+    controller = ESPhomeController(platform)
     controller.peripherals, controller.output = peripherals, output
     monkeypatch.setattr(ESPhomeController, "_load_paired_devices", AsyncMock(side_effect=RuntimeError("no database")))
     with pytest.raises(RuntimeError):

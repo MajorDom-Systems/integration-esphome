@@ -161,8 +161,8 @@ def radio(node: FakeImprovNode) -> FakeBLESource:
 
 
 @pytest.fixture
-def deps(deps: Platform) -> Platform:
-    return replace(deps, wifi=HOME)
+def platform(platform: Platform) -> Platform:
+    return replace(platform, wifi=HOME)
 
 
 @pytest_asyncio.fixture
@@ -279,9 +279,9 @@ async def test_ble_discovery_stops_with_the_controller(
 
 
 async def test_a_router_handed_over_once_it_runs_is_listened_to_without_a_restart(
-    deps: Platform, peripherals: Peripherals, router: BLEService, node: FakeImprovNode, radio: FakeBLESource
+    platform: Platform, peripherals: Peripherals, router: BLEService, node: FakeImprovNode, radio: FakeBLESource
 ):
-    controller = ESPhomeController(deps)
+    controller = ESPhomeController(platform)
     controller.peripherals = Peripherals({"mdns": peripherals.endpoint("mdns")})
     await controller.start()
     try:
