@@ -18,9 +18,7 @@ from majordom_esphome.models import ESPhomeDevice, ESPhomeDeviceIntegrationData,
 ROOM = UUID(int=42)
 
 
-async def hub_creates_device(
-    deps: Platform, discovery: Discovery, name: str = "Kitchen relay", room: UUID = ROOM
-) -> None:
+async def hub_creates_device(deps: Platform, discovery: Discovery, name: str = "Kitchen relay", room: UUID = ROOM):
     """What the Hub does when the user picks a discovery: it creates the device (name, room) *before* asking the
     integration to pair (`DeviceProvider.create_device`). The integration completes that device."""
     async with deps.make_device_repository(discovery.integration) as repo:
@@ -36,7 +34,7 @@ async def hub_creates_device(
         )
 
 
-async def wait_until(predicate: Callable[[], Any], timeout: float = 10.0, message: str = "condition") -> None:
+async def wait_until(predicate: Callable[[], Any], timeout: float = 10.0, message: str = "condition"):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if predicate():
@@ -78,7 +76,7 @@ async def wait_for_value(
     return next(v for v in reversed(values(output, parameter.id)) if predicate(v))
 
 
-def assert_values_match_parameters(output: RecordingControllerOutput, device: ESPhomeDevice) -> None:
+def assert_values_match_parameters(output: RecordingControllerOutput, device: ESPhomeDevice):
     """Every reported value has exactly the plain type its parameter declares (no IntEnums, protobuf objects, ...).
 
     A `struct` value is a dict keyed by its sub-parameter ids (as the SDK specifies), each value of its sub-type.
@@ -89,7 +87,7 @@ def assert_values_match_parameters(output: RecordingControllerOutput, device: ES
         _assert_value_type(parameters[event.parameter_id], event.value)
 
 
-def _assert_value_type(parameter: ESPhomeParameter, value: Any) -> None:
+def _assert_value_type(parameter: ESPhomeParameter, value: Any):
     expected: dict[ParameterDataType, tuple[type, ...]] = {
         ParameterDataType.bool: (bool,),
         ParameterDataType.integer: (int,),
@@ -123,7 +121,7 @@ def leaked_tasks() -> list[asyncio.Task[Any]]:
     return leaked
 
 
-async def assert_not_paired(deps: Platform, device_id: UUID, kept_key: bool = False) -> None:
+async def assert_not_paired(deps: Platform, device_id: UUID, kept_key: bool = False):
     """A failed pairing leaves the device as the Hub created it: no parameters, no connection data, except (`kept_key`)
     the key the integration already set on the node, kept so the node is not locked out of the next attempt."""
     async with deps.make_device_repository(ESPhomeController.slug()) as repo:

@@ -118,7 +118,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
     def parameter_type(self) -> type[ESPhomeParameter]:
         return ESPhomeParameter
 
-    async def start(self) -> None:
+    async def start(self):
         logger.info("Starting ESPHome integration")
         self._is_running = True
 
@@ -155,7 +155,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
         router = self._router
         self._ble_cancel = router.register(self, {UUID(improv.SERVICE_UUID)}) if router else None
 
-    async def stop(self) -> None:
+    async def stop(self):
         logger.info("Stopping ESPHome integration")
         self._is_running = False
         if self._zeroconf_cancel:
@@ -185,19 +185,19 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
 
     # ZeroconfDiscoveryListener: called by the SDK's discovery service
 
-    async def zeroconf_did_discover_service(self, zeroconf: Zeroconf, info: ZeroconfDiscoveryInfo) -> None:
+    async def zeroconf_did_discover_service(self, zeroconf: Zeroconf, info: ZeroconfDiscoveryInfo):
         await self._on_zeroconf_service(info)
 
-    async def zeroconf_did_update_service(self, zeroconf: Zeroconf, info: ZeroconfDiscoveryInfo) -> None:
+    async def zeroconf_did_update_service(self, zeroconf: Zeroconf, info: ZeroconfDiscoveryInfo):
         await self._on_zeroconf_service(info)
 
-    async def zeroconf_did_remove_service(self, zeroconf: Zeroconf, type_: str, name: str) -> None:
+    async def zeroconf_did_remove_service(self, zeroconf: Zeroconf, type_: str, name: str):
         device_id = self._discovery_names.pop(name, None)
         if device_id is not None and self._discoveries.pop(device_id, None) is not None:
             self._discovery_data.pop(device_id, None)
             await self.output.controller_did_lose_discovery(self, device_id)
 
-    async def _on_zeroconf_service(self, service_info: ZeroconfDiscoveryInfo) -> None:
+    async def _on_zeroconf_service(self, service_info: ZeroconfDiscoveryInfo):
         try:
             node_name = service_info.name.removesuffix(f".{service_info.type_}")
             properties = service_info.decoded_properties
@@ -245,19 +245,19 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
                 await self.output.controller_did_receive_discovery(self, discovery)
             else:
                 await self.output.controller_did_update_discovery(self, discovery)
-            logger.debug("Discovered ESPHome node %s at %s:%s", node_name, addresses, port)
+            logger.debug(f"Discovered ESPHome node {node_name} at {addresses}:{port}")
         except Exception:
             logger.exception("Error handling zeroconf discovery")
 
     # BLEDiscoveryListener: unprovisioned nodes advertising Improv
 
-    async def ble_did_discover_device(self, ble: BLERouter, info: BLEDiscoveryInfo) -> None:
+    async def ble_did_discover_device(self, ble: BLERouter, info: BLEDiscoveryInfo):
         await self._on_improv_advert(info)
 
-    async def ble_did_update_device(self, ble: BLERouter, info: BLEDiscoveryInfo) -> None:
+    async def ble_did_update_device(self, ble: BLERouter, info: BLEDiscoveryInfo):
         await self._on_improv_advert(info)
 
-    async def ble_did_remove_device(self, ble: BLERouter, info: BLEDiscoveryInfo) -> None:
+    async def ble_did_remove_device(self, ble: BLERouter, info: BLEDiscoveryInfo):
         if self._ble_names.get(info.device.address) in self._joining:  # being set up: its radio is held, silenced
             return
         name = self._ble_names.pop(info.device.address, None)
@@ -266,7 +266,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
             self._improv_nodes.pop(device_id, None)
             await self.output.controller_did_lose_discovery(self, device_id)
 
-    async def _on_improv_advert(self, info: BLEDiscoveryInfo) -> None:
+    async def _on_improv_advert(self, info: BLEDiscoveryInfo):
         """Offer a node waiting for Wi-Fi. Improv carries no identity but the node name, so the discovery is keyed by
         it (the BLE address may be random, and differs from the MAC the node is known by once on the network)."""
         try:
@@ -290,7 +290,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
             )
             self._discoveries[device_id] = discovery
             await self.output.controller_did_receive_discovery(self, discovery)
-            logger.debug("Discovered unprovisioned ESPHome node %s over BLE", name)
+            logger.debug(f"Discovered unprovisioned ESPHome node {name} over BLE")
         except Exception:
             logger.exception("Error handling BLE discovery")
 
@@ -301,7 +301,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
         addresses = [hostname, *(info.parsed_addresses or [])] if hostname else list(info.parsed_addresses or [])
         return list(dict.fromkeys(addresses)) or [f"{node_name}.local"]
 
-    async def _refresh_addresses(self, device_id: UUID, announced: list[str]) -> None:
+    async def _refresh_addresses(self, device_id: UUID, announced: list[str]):
         """A paired device announced itself again: learn its new addresses, forget the ones it left."""
         device = await self._update_device(device_id)
         if device is None:
@@ -310,7 +310,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
         refreshed = [a for a in announced if a not in known] + [a for a in known if a in announced]
         if refreshed == known:
             return
-        logger.info("Addresses of %s changed: %s -> %s", device_id, known, refreshed)
+        logger.info(f"Addresses of {device_id} changed: {known} -> {refreshed}")
         await self._save_integration_data(device_id, addresses=refreshed)
         if connection := self._connections.get(device_id):
             connection.addresses = refreshed
@@ -327,14 +327,14 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
             if not joined.done():
                 joined.set_exception(ValueError(f"The device is already paired as {name}: it is back on the network"))
 
-    async def _save_integration_data(self, device_id: UUID, **changes: Any) -> None:
+    async def _save_integration_data(self, device_id: UUID, **changes: Any):
         async with self.platform.device_repository(self) as repo:
             device = await repo.get(device_id, as_=ESPhomeDevice)
             if device is not None:
                 data = device.integration_data.model_copy(update=changes)
                 await repo.save(device.model_copy(update={"integration_data": data}))
 
-    async def _load_paired_devices(self) -> None:
+    async def _load_paired_devices(self):
         async with self.platform.device_repository(self) as repo:
             devices = await repo.get_all(ESPhomeDevice)
         for device in devices:
@@ -342,7 +342,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
                 self._paired.add(device.id)
                 self._connect(device)
 
-    def _connect(self, device: ESPhomeDevice) -> None:
+    def _connect(self, device: ESPhomeDevice):
         data = device.integration_data
         connection = self._make_connection(device.id, data.addresses, data.port, data.encryption_key)
         self._connections[device.id] = connection
@@ -362,13 +362,13 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
             on_client=self._on_client if self.settings.is_bluetooth_proxy_enabled else None,
         )
 
-    def _spawn(self, coroutine: Coroutine[Any, Any, None]) -> None:
+    def _spawn(self, coroutine: Coroutine[Any, Any, None]):
         """Run in the background, keeping a reference so the task is neither collected nor left behind on stop()."""
         task = asyncio.create_task(coroutine)
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
-    async def _on_availability(self, device_id: UUID, available: bool, reason: str | None) -> None:
+    async def _on_availability(self, device_id: UUID, available: bool, reason: str | None):
         if device_id not in self._connections:  # still pairing, or already unpaired
             return
         await self._update_device(device_id, available=available, last_error=None if available else reason)
@@ -377,7 +377,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
         else:
             await self.output.controller_did_lose_device(self, device_id)
 
-    async def _on_client(self, device_id: UUID, client: APIClient | None) -> None:
+    async def _on_client(self, device_id: UUID, client: APIClient | None):
         """A paired node connected: lend its Bluetooth radio, if it has one to lend, as a ``ble/esphome-proxy`` the
         router takes; a node being paired serves no one until it is. A node gone: take the radio back."""
         if self._proxies.pop(device_id, None):
@@ -386,7 +386,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
             self._proxies[device_id] = BLEProxy(source, name=source.mac)
             await self.output.controller_did_change_provided(self)
 
-    async def _on_addresses(self, device_id: UUID, addresses: list[str]) -> None:
+    async def _on_addresses(self, device_id: UUID, addresses: list[str]):
         if device_id in self._connections:  # not while pairing: the device is saved with the final order
             await self._save_integration_data(device_id, addresses=addresses)
 
@@ -413,7 +413,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
         data.keyless = False  # whatever mDNS still announces, the node requires the key now
         return key
 
-    async def _on_state(self, device_id: UUID, entity: EntityInfo, state: EntityState) -> None:
+    async def _on_state(self, device_id: UUID, entity: EntityInfo, state: EntityState):
         self._states.setdefault(device_id, {})[state.key] = state  # kept while pairing: the snapshot then reports them
         if device_id not in self._connections:  # still pairing, or already unpaired: the Hub does not know the device
             return
@@ -422,7 +422,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
             if events:
                 await self.output.controller_did_receive_events(self, events)
         except Exception:
-            logger.exception("Error handling state for %s", entity.name)
+            logger.exception(f"Error handling state for {entity.name}")
 
     def _events(self, device_id: UUID, entity: EntityInfo, state: EntityState) -> list[DeviceParameterChange]:
         component = mapper.component_type_of(entity)
@@ -453,7 +453,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
     def _parameter_id(self, device_id: UUID, entity: EntityInfo, sub_field: str) -> UUID:
         return self.parameter_uuid(device_id, f"{entity.object_id}_{sub_field}")
 
-    async def _report_snapshot(self, device_id: UUID) -> None:
+    async def _report_snapshot(self, device_id: UUID):
         """Report the last known value of every parameter in a single batch, the kept settings included."""
         connection = self._connections[device_id]
         entities = connection.get_entities()
@@ -483,7 +483,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
     async def _pair_over_ble(self, discovery: Discovery) -> UUID:
         """Give the node the Hub's Wi-Fi, wait for it on the network, then pair it like any other node. The Hub's device
         takes the node's own identity (from its MAC), which is what it is found by from then on; it is returned."""
-        logger.info("Setting up ESPHome device %s over BLE", discovery.device_name)
+        logger.info(f"Setting up ESPHome device {discovery.device_name} over BLE")
         node = self._improv_nodes[discovery.id]
         try:
             wifi = self._wifi_credentials()
@@ -515,7 +515,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
         except MissingCredentialsError:
             raise  # the Hub returns it to the app's pairing request
         except Exception as exc:
-            logger.exception("Setting up %s over BLE failed", discovery.device_name)
+            logger.exception(f"Setting up {discovery.device_name} over BLE failed")
             reason = str(exc) if isinstance(exc, ValueError | LookupError | TimeoutError | improv.SetupError) else None
             await self._report_error(discovery.id, reason or describe_error(exc.__cause__ or exc))
             raise
@@ -530,15 +530,15 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
             raise MissingCredentialsError(MissingCredentialsError.WIFI)
         return wifi
 
-    async def _report_error(self, discovery_id: UUID, reason: str) -> None:
+    async def _report_error(self, discovery_id: UUID, reason: str):
         """Show the user why pairing a discovery failed (or what it waits for), while it is still offered."""
         if (known := self._discoveries.get(discovery_id)) is not None:
             failed = known.model_copy(update={"last_error": reason})
             self._discoveries[discovery_id] = failed
             await self.output.controller_did_update_discovery(self, failed)
 
-    async def _pair_over_api(self, discovery: Discovery, credentials: ProvidedCredentials | None) -> None:
-        logger.info("Pairing ESPHome device: %s", discovery.id)
+    async def _pair_over_api(self, discovery: Discovery, credentials: ProvidedCredentials | None):
+        logger.info(f"Pairing ESPHome device: {discovery.id}")
         known = self._discoveries.get(discovery.id, discovery)
         conn: ESPhomeDeviceConnection | None = None
         try:
@@ -567,8 +567,8 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
                 encryption_key = await self._provision_key(conn, integration_data, encryption_key)
             elif encryption_key is None:
                 logger.warning(
-                    "%s accepts unencrypted API connections only: add `api: encryption:` to its YAML",
-                    discovery.device_name,
+                    f"{discovery.device_name} accepts unencrypted API connections only: "
+                    "add `api: encryption:` to its YAML"
                 )
             await conn.start()
             await conn.wait_ready()
@@ -621,7 +621,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
             if conn is not None:
                 await conn.stop()
             self._states.pop(discovery.id, None)
-            logger.exception("Pairing %s failed", discovery.id)
+            logger.exception(f"Pairing {discovery.id} failed")
             if self._is_running:  # a stopped controller offers nothing
                 reason = str(exc) if isinstance(exc, ValueError | LookupError) else describe_error(exc.__cause__ or exc)
                 failed = known.model_copy(update={"last_error": reason})
@@ -664,9 +664,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
             ),
         )
 
-    async def _keep_setting(
-        self, device_id: UUID, object_id: str, field: str, parameter: ESPhomeParameter, value: Any
-    ) -> None:
+    async def _keep_setting(self, device_id: UUID, object_id: str, field: str, parameter: ESPhomeParameter, value: Any):
         kept = mapper.local_value(parameter, value)
         async with self.platform.device_repository(self) as repo:
             device = await repo.get(device_id, as_=ESPhomeDevice)
@@ -679,7 +677,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
         event = DeviceParameterChange(device_id=device_id, parameter_id=parameter.id, value=kept)
         await self.output.controller_did_receive_events(self, [event])
 
-    async def unpair(self, device: ESPhomeDevice) -> None:
+    async def unpair(self, device: ESPhomeDevice):
         connection = self._connections.pop(device.id, None)
         self._states.pop(device.id, None)
         self._paired.discard(device.id)
@@ -688,11 +686,11 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
         # The Hub removes the device record after unpair; the repository protocol
         # intentionally does not expose delete() to integrations.
 
-    async def identify(self, device: ESPhomeDevice) -> None:
+    async def identify(self, device: ESPhomeDevice):
         # ESPHome has no identify action, so there is nothing to send to the device
-        logger.info("Identify called for %s: not supported by ESPHome", device.id)
+        logger.info(f"Identify called for {device.id}: not supported by ESPHome")
 
-    async def fetch(self, device: ESPhomeDevice) -> None:
+    async def fetch(self, device: ESPhomeDevice):
         if device.id not in self._connections:
             raise ConnectionError("Device not connected")
         await self._report_snapshot(device.id)
@@ -702,7 +700,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
         command: DeviceCommand,
         device: ESPhomeDevice,
         parameter: ESPhomeParameter,
-    ) -> None:
+    ):
         data = parameter.integration_data
         if mapper.is_local(parameter):  # a setting kept here: stored, and echoed so the Hub stores it too
             await self._keep_setting(device.id, data.object_id or "", data.sub_field or "", parameter, command.value)

@@ -22,7 +22,7 @@ from tests.virtual.mdns import Advert, FakeMDNS, fake_mdns
 from tests.virtual.runner import ENCRYPTED, PLAIN, SKETCHES, VirtualDevice, build
 
 
-def pytest_configure(config: pytest.Config) -> None:
+def pytest_configure(config: pytest.Config):
     config.addinivalue_line("markers", "catalogue: sweep over one virtual node per entity kind (run with -m catalogue)")
 
 
@@ -35,7 +35,7 @@ def build_errors() -> dict[str, str | None]:
 _BUILD_ERRORS: dict[str, str | None] = {}
 
 
-def pytest_collection_finish(session: pytest.Session) -> None:
+def pytest_collection_finish(session: pytest.Session):
     """Build the virtual devices before the first test that needs one, outside any test timeout."""
     if any(
         {"device", "encrypted_device", "extras_device", "keyless_device"} & set(getattr(item, "fixturenames", ()))

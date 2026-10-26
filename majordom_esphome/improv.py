@@ -57,7 +57,7 @@ async def provision(
     ssid: str,
     password: str,
     on_authorization_required: Callable[[], Awaitable[None]],
-) -> None:
+):
     """Give the node the Wi-Fi network; returns once it has joined it (ESPHome reports a failure after its
     `wifi_timeout`). The radio that hears the node best is held for the whole exchange. Raises `SetupError`."""
     try:
@@ -78,7 +78,7 @@ async def provision(
 
 async def _provision(
     connection: BLEConnection, ssid: str, password: str, on_authorization_required: Callable[[], Awaitable[None]]
-) -> None:
+):
     (service,) = (s for s in await connection.services() if s.uuid.lower() == SERVICE_UUID)
     handles = {c.uuid.lower(): c.handle for c in service.characteristics}
     events: asyncio.Queue[tuple[str, bytes]] = asyncio.Queue()

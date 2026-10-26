@@ -43,7 +43,7 @@ async def extras(controller: ESPhomeController, mdns: FakeMDNS, extras_device: V
     return stored
 
 
-async def send(controller: ESPhomeController, device: ESPhomeDevice, entity: str, sub_field: str, value) -> None:
+async def send(controller: ESPhomeController, device: ESPhomeDevice, entity: str, sub_field: str, value):
     target = param(device, entity, sub_field)
     await controller.send_command(
         DeviceCommand(device_id=device.id, parameter_id=target.id, value=value), device, target

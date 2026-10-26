@@ -56,7 +56,7 @@ HANDLES = {uuid: 0x11 + i for i, uuid in enumerate(IMPROV_CHARACTERISTICS)}
 class FakeImprovNode:
     """An unprovisioned ESPHome node's Improv GATT service, as the `BLEConnection` a Bluetooth source hands out."""
 
-    def __init__(self, name: str = KEYLESS.name, address: str = "AA:BB:CC:DD:EE:01") -> None:
+    def __init__(self, name: str = KEYLESS.name, address: str = "AA:BB:CC:DD:EE:01"):
         self.name, self.address = name, address
         self.state = State.AUTHORIZED
         self.password = HOME.password  # of the network it can join
@@ -79,13 +79,13 @@ class FakeImprovNode:
     def info(self, named: bool = True) -> BLEDiscoveryInfo:
         return BLEDiscoveryInfo(BLEDevice(self.address, None, None), self.advertisement(named))
 
-    async def advertise(self, source: FakeBLESource, named: bool = True, rssi: int = -60) -> None:
+    async def advertise(self, source: FakeBLESource, named: bool = True, rssi: int = -60):
         """Heard by ``source``; returns once the SDK has passed the advert on."""
         name = self.name if named else None
         source.advertise(self.address, rssi, name, [SERVICE_UUID], {SERVICE_DATA_UUID: self._service_data()})
         await asyncio.sleep(0.05)
 
-    async def press_button(self) -> None:
+    async def press_button(self):
         self.state = State.AUTHORIZED
         self._notify(CHARACTERISTIC_UUID_STATE, self.state)
 
@@ -106,23 +106,23 @@ class FakeImprovNode:
         values = {HANDLES[CHARACTERISTIC_UUID_STATE]: self.state, HANDLES[CHARACTERISTIC_UUID_CAPABILITIES]: 0}
         return bytes([values.get(handle, Error.NO_ERROR)])
 
-    async def write(self, handle: int, data: bytes, is_response_needed: bool = True) -> None:
+    async def write(self, handle: int, data: bytes, is_response_needed: bool = True):
         assert handle == HANDLES[CHARACTERISTIC_UUID_RPC_COMMAND]
         command = WiFiSettingsCmd.from_bytes(data)
         asyncio.get_running_loop().create_task(
             self._join(WifiCredentials(command.ssid.decode(), command.password.decode()))
         )
 
-    async def start_notify(self, handle: int, callback: Callable[[bytes], None]) -> None:
+    async def start_notify(self, handle: int, callback: Callable[[bytes], None]):
         self._callbacks[handle] = callback
 
-    async def stop_notify(self, handle: int) -> None:
+    async def stop_notify(self, handle: int):
         self._callbacks.pop(handle, None)
 
-    async def disconnect(self) -> None:
+    async def disconnect(self):
         self._callbacks.clear()
 
-    async def _join(self, wifi: WifiCredentials) -> None:
+    async def _join(self, wifi: WifiCredentials):
         if self.state == State.AUTHORIZATION_REQUIRED:
             self._notify(CHARACTERISTIC_UUID_ERROR, Error.NOT_AUTHORIZED)
             return
@@ -141,7 +141,7 @@ class FakeImprovNode:
         if self.on_joined is not None:
             await self.on_joined()
 
-    def _notify(self, uuid: str, value: int) -> None:
+    def _notify(self, uuid: str, value: int):
         if callback := self._callbacks.get(HANDLES[uuid]):
             callback(bytes([value]))
 
@@ -194,8 +194,8 @@ async def keyless_device() -> AsyncIterator[VirtualDevice]:
     await virtual.stop()
 
 
-def joins_as_keyless_device(node: FakeImprovNode, mdns: FakeMDNS) -> None:
-    async def appear() -> None:
+def joins_as_keyless_device(node: FakeImprovNode, mdns: FakeMDNS):
+    async def appear():
         await mdns.announce(Advert(name=KEYLESS.name, mac=KEYLESS.mac, port=KEYLESS.port, keyless=True))
 
     node.on_joined = appear

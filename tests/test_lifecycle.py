@@ -19,7 +19,7 @@ async def stored_device(controller: ESPhomeController, device_id) -> ESPhomeDevi
     return stored
 
 
-async def flip_relay(device: VirtualDevice) -> None:
+async def flip_relay(device: VirtualDevice):
     client = APIClient(device.address, device.port, "")
     await client.connect(login=True)
     try:
@@ -98,7 +98,7 @@ async def test_startup_with_an_offline_device_does_not_block_and_recovers(
         await restarted.stop()
 
 
-async def _wait_unavailable(controller: ESPhomeController, paired: ESPhomeDevice) -> None:
+async def _wait_unavailable(controller: ESPhomeController, paired: ESPhomeDevice):
     deadline = asyncio.get_running_loop().time() + 20
     while asyncio.get_running_loop().time() < deadline:
         stored = await stored_device(controller, paired.id)

@@ -65,7 +65,7 @@ async def stored(controller: ESPhomeController, device_id: Any) -> ESPhomeDevice
     return device
 
 
-def assert_is_a_key(key: str | None) -> None:
+def assert_is_a_key(key: str | None):
     assert key is not None and key != ZERO_NOISE_PSK
     assert len(base64.b64decode(key, validate=True)) == 32
 
@@ -171,7 +171,7 @@ class FakeNode:
 
 
 class FakeClient:
-    def __init__(self, node: FakeNode, psk: str | None) -> None:
+    def __init__(self, node: FakeNode, psk: str | None):
         self.node, self.psk = node, psk
         self.on_stop: Callable[[bool], Coroutine[Any, Any, None]] | None = None
 
@@ -193,10 +193,10 @@ class FakeClient:
     async def list_entities_services(self) -> tuple[list[EntityInfo], list[Any]]:
         return [], []
 
-    def subscribe_states(self, on_state: Callable[..., None]) -> None:
+    def subscribe_states(self, on_state: Callable[..., None]):
         pass
 
-    async def disconnect(self) -> None:
+    async def disconnect(self):
         pass
 
 
