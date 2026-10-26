@@ -98,9 +98,9 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
         self._ble_names: dict[str, str] = {}  # BLE address -> advertised name: ESPHome sends it in few adverts
         self._joining: dict[str, asyncio.Future[Discovery]] = {}  # BLE name -> the node's mDNS discovery, once seen
         self._paired: set[UUID] = set()
-        self._tasks: set[asyncio.Task[None]] = set()
+        self._tasks: set[asyncio.Task[Any]] = set()
         self._states: dict[UUID, dict[int, EntityState]] = {}
-        self._is_running = False  # from start() to stop(): a pairing still in flight after a stop adopts nothing
+        self._run: object | None = None  # from start() to stop(): a pairing finishing in another run adopts nothing
 
     @property
     def discoveries(self) -> dict[UUID, Discovery]:
@@ -120,7 +120,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
 
     async def start(self):
         logger.info("Starting ESPHome integration")
-        self._is_running = True
+        self._run = object()
         await self._load_paired_devices()  # first: DNS-SD tells the nodes in its cache at once, the paired ones too
 
         zeroconf: Zeroconf = self.peripherals.instance("mdns")
@@ -157,7 +157,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
 
     async def stop(self):
         logger.info("Stopping ESPHome integration")
-        self._is_running = False
+        self._run = None
         if self._zeroconf_cancel:
             self._zeroconf_cancel()
             self._zeroconf_cancel = None
@@ -165,7 +165,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
             self._ble_cancel()
             self._ble_cancel = None
 
-        tasks = list(self._tasks)
+        tasks = list(self._tasks)  # the setups over Bluetooth too
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
@@ -362,11 +362,12 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
             on_client=self._on_client if self.settings.is_bluetooth_proxy_enabled else None,
         )
 
-    def _spawn(self, coroutine: Coroutine[Any, Any, None]):
+    def _spawn[T](self, coroutine: Coroutine[Any, Any, T]) -> asyncio.Task[T]:
         """Run in the background, keeping a reference so the task is neither collected nor left behind on stop()."""
         task = asyncio.create_task(coroutine)
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
+        return task
 
     async def _on_availability(self, device_id: UUID, available: bool, reason: str | None):
         if device_id not in self._connections:  # still pairing, or already unpaired
@@ -476,12 +477,13 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
             await self.output.controller_did_receive_events(self, events)
 
     async def pair_device(self, discovery: Discovery, credentials: ProvidedCredentials | None) -> UUID | None:
+        run = self._run
         if discovery.id in self._improv_nodes:
-            return await self._pair_over_ble(discovery)
-        await self._pair_over_api(discovery, credentials)
+            return await self._pair_over_ble(discovery, run)
+        await self._pair_over_api(discovery, credentials, run)
         return None
 
-    async def _pair_over_ble(self, discovery: Discovery) -> UUID:
+    async def _pair_over_ble(self, discovery: Discovery, run: object | None) -> UUID:
         """Give the node the Hub's Wi-Fi, wait for it on the network, then pair it like any other node. The Hub's device
         takes the node's own identity (from its MAC), which is what it is found by from then on; it is returned."""
         logger.info(f"Setting up ESPHome device {discovery.device_name} over BLE")
@@ -494,25 +496,16 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
                 raise LookupError("The Hub has not created a device for this discovery")
             if (router := self._router) is None:
                 raise LookupError("The Hub has no Bluetooth to set the device up with")
-            joined = self._joining[node.name] = asyncio.get_running_loop().create_future()
+            setup = self._spawn(self._join_wifi(router, node, wifi, discovery.id))  # stop() ends it at once
             try:
-                await improv.provision(
-                    router,
-                    node.address,
-                    wifi.ssid,
-                    wifi.password,
-                    on_authorization_required=lambda: self._report_error(discovery.id, improv.PRESS_BUTTON),
-                )
-                async with asyncio.timeout(NODE_APPEAR_TIMEOUT):
-                    on_network = await joined
-            except TimeoutError:
-                raise TimeoutError(f"The device joined {wifi.ssid} but did not show up on the network") from None
-            finally:
-                self._joining.pop(node.name, None)
-            self._refuse_if_stopped()
+                on_network = await setup
+            except asyncio.CancelledError:
+                self._refuse_if_stopped(run)  # stop() ended it
+                raise  # the Hub's request went away
+            self._refuse_if_stopped(run)
             async with self.platform.device_repository(self) as repo:
                 await repo.save(hub_device.model_copy(update={"id": on_network.id}), previous_id=discovery.id)
-            await self._pair_over_api(on_network, credentials=None)
+            await self._pair_over_api(on_network, None, run)
         except MissingCredentialsError:
             raise  # the Hub returns it to the app's pairing request
         except Exception as exc:
@@ -526,6 +519,26 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
         await self.output.controller_did_lose_discovery(self, on_network.id)
         return on_network.id
 
+    async def _join_wifi(
+        self, router: BLERouter, node: _ImprovNode, wifi: WifiCredentials, discovery_id: UUID
+    ) -> Discovery:
+        """Give the node the Hub's Wi-Fi over Improv, then wait for it on the network: its mDNS discovery."""
+        joined = self._joining[node.name] = asyncio.get_running_loop().create_future()
+        try:
+            await improv.provision(
+                router,
+                node.address,
+                wifi.ssid,
+                wifi.password,
+                on_authorization_required=lambda: self._report_error(discovery_id, improv.PRESS_BUTTON),
+            )
+            async with asyncio.timeout(NODE_APPEAR_TIMEOUT):
+                return await joined
+        except TimeoutError:
+            raise TimeoutError(f"The device joined {wifi.ssid} but did not show up on the network") from None
+        finally:
+            self._joining.pop(node.name, None)
+
     def _wifi_credentials(self) -> WifiCredentials:
         if (wifi := self.platform.wifi) is None:
             raise MissingCredentialsError(MissingCredentialsError.WIFI)
@@ -538,7 +551,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
             self._discoveries[discovery_id] = failed
             await self.output.controller_did_update_discovery(self, failed)
 
-    async def _pair_over_api(self, discovery: Discovery, credentials: ProvidedCredentials | None):
+    async def _pair_over_api(self, discovery: Discovery, credentials: ProvidedCredentials | None, run: object | None):
         logger.info(f"Pairing ESPHome device: {discovery.id}")
         known = self._discoveries.get(discovery.id, discovery)
         conn: ESPhomeDeviceConnection | None = None
@@ -599,11 +612,11 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
                 }
             )
 
-            self._refuse_if_stopped()
+            self._refuse_if_stopped(run)
             async with self.platform.device_repository(self) as repo:
                 await repo.save(device)
 
-            self._refuse_if_stopped()  # it stopped while the device was saved
+            self._refuse_if_stopped(run)  # it stopped while the device was saved
             self._connections[discovery.id] = conn
             self._paired.add(discovery.id)
 
@@ -619,7 +632,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
         except Exception as exc:
             await self._let_go_of_pairing(discovery.id, conn)
             logger.exception(f"Pairing {discovery.id} failed")
-            if self._is_running:  # a stopped controller offers nothing
+            if self._run is run:  # a stopped controller offers nothing
                 reason = str(exc) if isinstance(exc, ValueError | LookupError) else describe_error(exc.__cause__ or exc)
                 failed = known.model_copy(update={"last_error": reason})
                 self._discoveries[discovery.id] = failed
@@ -635,9 +648,10 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
                 self._paired.discard(device_id)
         self._states.pop(device_id, None)
 
-    def _refuse_if_stopped(self):
-        """A pairing that finishes after stop() takes nothing: the next start() connects what is paired anew."""
-        if not self._is_running:
+    def _refuse_if_stopped(self, run: object | None):
+        """A pairing that finishes after stop() takes nothing, also once ESPHome runs again (that run may have other
+        settings): the next start() connects what is paired anew. Adopting it into the new run may come later."""
+        if run is None or self._run is not run:
             raise ConnectionError("ESPHome stopped while pairing")
 
     def _build_parameter(

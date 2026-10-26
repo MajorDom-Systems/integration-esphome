@@ -565,6 +565,63 @@ async def test_the_reason_stays_on_the_discovery_while_the_node_keeps_advertisin
     assert controller.discoveries[ble_discovery.id].last_error
 
 
+# A stop meeting a setup: nothing can hear the node any more, and a run started meanwhile didn't begin it
+
+
+async def test_a_setup_waiting_for_the_node_on_the_network_ends_with_a_stop(
+    controller: ESPhomeController, ble_discovery: Discovery, node: FakeImprovNode
+):
+    joined = asyncio.Event()
+
+    async def appear():
+        joined.set()  # on Wi-Fi, not announced yet
+
+    node.on_joined = appear
+    pairing = asyncio.create_task(controller.pair_device(ble_discovery, credentials=None))
+    await asyncio.wait_for(joined.wait(), 5)
+
+    await controller.stop()
+
+    with pytest.raises(ConnectionError, match="stopped"):
+        await asyncio.wait_for(pairing, 0.5)  # not after NODE_APPEAR_TIMEOUT
+    await assert_not_paired(controller.platform, ble_discovery.id)
+    assert controller._joining == {} and leaked_tasks() == []
+
+
+async def test_a_setup_waiting_for_the_button_ends_with_a_stop(
+    controller: ESPhomeController, ble_discovery: Discovery, node: FakeImprovNode, router: BLEService
+):
+    node.state = State.AUTHORIZATION_REQUIRED
+    pairing = asyncio.create_task(controller.pair_device(ble_discovery, credentials=None))
+    await wait_until(
+        lambda: "button" in (controller.discoveries[ble_discovery.id].last_error or ""), 5, "the instruction"
+    )
+
+    await controller.stop()
+
+    with pytest.raises(ConnectionError, match="stopped"):
+        await asyncio.wait_for(pairing, 0.5)  # not after AUTHORIZATION_TIMEOUT
+    assert router._leased == {}, "the node's radio is free again"
+    assert node.received == [] and leaked_tasks() == []
+
+
+async def test_a_setup_whose_request_went_away_lets_go_of_the_node(
+    controller: ESPhomeController, ble_discovery: Discovery, node: FakeImprovNode, router: BLEService
+):
+    node.state = State.AUTHORIZATION_REQUIRED
+    pairing = asyncio.create_task(controller.pair_device(ble_discovery, credentials=None))
+    await wait_until(
+        lambda: "button" in (controller.discoveries[ble_discovery.id].last_error or ""), 5, "the instruction"
+    )
+
+    pairing.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await pairing
+    assert router._leased == {} and controller._joining == {}
+    assert leaked_tasks() == []
+
+
 @pytest.mark.parametrize(
     ("ble_name", "node_name", "same"),
     [

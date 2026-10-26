@@ -788,6 +788,55 @@ async def test_a_pairing_that_outlives_a_stop_is_refused_and_leaves_nothing_behi
     assert leaked_tasks() == []
 
 
+async def test_a_pairing_across_a_restart_is_refused_and_lends_nothing(
+    runtime: Runtime,
+    esphome: ESPhomeController,
+    mdns: FakeMDNS,
+    nodes: Nodes,
+    ble: BLEService,
+    slow_nodes: asyncio.Event,
+):
+    """The user turns the proxies off (another hub needs the node's Bluetooth) while the node is paired: the pairing,
+    made with the proxies on, finishes once ESPHome runs again."""
+    discovery, pairing = await start_pairing(esphome, mdns, nodes, "kitchen")
+
+    await runtime.update_settings(esphome, {"is_bluetooth_proxy_enabled": False})
+    await wait_until(lambda: runtime.status(esphome).state == PeripheralState.RUNNING, message="ESPHome to run")
+    slow_nodes.set()
+
+    with pytest.raises(ConnectionError, match="stopped"):
+        await pairing
+    await asyncio.sleep(0.05)
+    assert sources(ble) == [] and esphome.provides == []
+    assert esphome._connections == {} and nodes.connection_of("kitchen").disconnected
+    await assert_not_paired(esphome.platform, discovery.id)
+
+
+async def test_a_stop_while_the_device_is_saved_refuses_the_pairing(
+    runtime: Runtime,
+    esphome: ESPhomeController,
+    mdns: FakeMDNS,
+    nodes: Nodes,
+    output: RecordingControllerOutput,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    discovery = await announce(esphome, mdns, "kitchen")
+    await hub_creates_device(esphome.platform, discovery, name="kitchen")
+    save = DeviceRepositoryMemory.save
+
+    async def save_then_stop(self: DeviceRepositoryMemory, device: Any, previous_id: UUID | None = None):
+        await save(self, device, previous_id)
+        if isinstance(device, ESPhomeDevice) and device.parameters is not None and device.available:
+            await runtime.disable(esphome)  # the pairing's own save: the device is complete
+
+    monkeypatch.setattr(DeviceRepositoryMemory, "save", save_then_stop)
+
+    with pytest.raises(ConnectionError, match="stopped"):
+        await esphome.pair_device(discovery, None)
+    assert esphome._connections == {} and nodes.connection_of("kitchen").disconnected
+    assert output.connected_devices == [] and leaked_tasks() == []
+
+
 async def test_a_stop_reaching_a_node_connection_from_inside_it_ends_it(
     runtime: Runtime, esphome: ESPhomeController, mdns: FakeMDNS, nodes: Nodes, ble: BLEService
 ):
