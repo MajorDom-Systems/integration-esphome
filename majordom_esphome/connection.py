@@ -268,6 +268,11 @@ class ESPhomeDeviceConnection:
         except Exception:
             logger.exception("Error reporting availability of %s", self.device_id)
 
+    async def report_client(self):
+        """Tell the client callback the current client again, as if it had just connected."""
+        self._reported_client = None
+        await self._report_client(self._client)
+
     async def _report_client(self, client: APIClient | None) -> None:
         if self.on_client_callback is None or self._reported_client is client:
             return

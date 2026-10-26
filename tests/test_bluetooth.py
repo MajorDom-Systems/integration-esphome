@@ -30,6 +30,7 @@ from majordom_integration_sdk.schemas.device import Discovery
 from majordom_integration_sdk.testing import RecordingControllerOutput
 
 from majordom_esphome.bluetooth import ESPhomeBLESource, ble_source_of
+from majordom_esphome.connection import WAIT_READY_TIMEOUT, ESPhomeDeviceConnection
 from majordom_esphome.controller import ESPhomeController
 from majordom_esphome.models import ESPhomeDevice
 from tests.helpers import assert_not_paired, hub_creates_device, leaked_tasks, wait_until
@@ -581,6 +582,34 @@ async def test_a_stop_reaching_a_node_connection_from_inside_it_ends_it(
     await asyncio.sleep(1)  # past the reconnect delay
     assert esphome._connections == {} and len(nodes.clients) == opened, "a stopped controller doesn't reconnect"
     assert leaked_tasks() == []
+
+
+async def test_a_node_lends_its_radio_only_once_it_is_paired(
+    runtime: Runtime,
+    esphome: ESPhomeController,
+    mdns: FakeMDNS,
+    nodes: Nodes,
+    ble: BLEService,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    held = asyncio.Event()
+    wait_ready = ESPhomeDeviceConnection.wait_ready
+
+    async def wait_ready_then_hold(self: ESPhomeDeviceConnection, timeout: float = WAIT_READY_TIMEOUT):
+        await wait_ready(self, timeout)
+        await held.wait()  # the node is connected, its pairing not done yet
+
+    monkeypatch.setattr(ESPhomeDeviceConnection, "wait_ready", wait_ready_then_hold)
+    discovery = await announce(esphome, mdns, "kitchen")
+    await hub_creates_device(esphome.platform, discovery, name="kitchen")
+    pairing = asyncio.create_task(esphome.pair_device(discovery, None))
+    await wait_until(lambda: nodes.clients and nodes.clients[-1].on_stop, message="the node to answer the connect")
+    await asyncio.sleep(0.1)
+
+    assert sources(ble) == [] and esphome.provides == [], "a node being paired serves no one yet"
+    held.set()
+    await pairing
+    await wait_until(lambda: sources(ble) == [lent("kitchen")], message="the paired node to be lent")
 
 
 async def test_a_cancelled_pairing_lets_go_of_the_node(
