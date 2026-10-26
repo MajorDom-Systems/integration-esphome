@@ -536,12 +536,13 @@ async def test_a_hub_without_wifi_cannot_set_up_the_node(
     controller: ESPhomeController,
     ble_discovery: Discovery,
     node: FakeImprovNode,
+    radio: FakeBLESource,
 ):
     """A Hub on Ethernet: told apart from any other failure, before the node is touched, so the app can ask for the
     Wi-Fi the node should join (the Hub saves it for the next attempt). The Hub returns the error to the app's pairing
     request, so the discovery's last_error is left as it was."""
     controller.platform = replace(controller.platform, wifi=None)
-    node.reachable = False  # any BLE step would fail with another error
+    radio.connection = None  # any BLE step would fail with another error
 
     with pytest.raises(MissingCredentialsError) as raised:
         await controller.pair_device(ble_discovery, credentials=None)
