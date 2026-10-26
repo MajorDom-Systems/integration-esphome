@@ -306,6 +306,22 @@ async def test_a_lost_router_is_let_go_without_a_restart(
     assert controller.discoveries == {}
 
 
+async def test_the_nodes_heard_through_a_lost_router_are_lost_with_it(
+    controller: ESPhomeController,
+    router: BLEService,
+    node: FakeImprovNode,
+    radio: FakeBLESource,
+    output: RecordingControllerOutput,
+):
+    await node.advertise(radio)
+
+    controller.peripherals = Peripherals({"mdns": controller.peripherals.endpoint("mdns")})
+    assert await controller.needed_peripheral_did_change(PeripheralChange("ble", router.endpoint, None))
+
+    assert controller.discoveries == {}, "nothing can set them up without a router"
+    assert output.lost_discoveries == [output.received_discoveries[0].id]
+
+
 # Pairing: Wi-Fi over BLE, then the node over the network
 
 

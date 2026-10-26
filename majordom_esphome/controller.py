@@ -131,6 +131,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
         """The router is followed in place, and a border router only carries the Thread devices to the hub: neither
         restarts it. Another DNS-SD does."""
         if change.family == "ble":
+            await self._let_go_of_router()
             self._listen_for_improv()
         return change.family in ("ble", "thread")
 
@@ -138,10 +139,19 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
     def _router(self) -> BLERouter | None:
         return self.peripherals.instance("ble")
 
-    def _listen_for_improv(self):
-        """Hear unprovisioned nodes through the router bound now, if there is one."""
+    async def _let_go_of_router(self):
+        """Stop listening to the router, and lose the nodes it heard: the next one tells what it hears."""
         if self._ble_cancel:
             self._ble_cancel()
+            self._ble_cancel = None
+        lost = [device_id for device_id in self._improv_nodes if self._discoveries.pop(device_id, None) is not None]
+        self._improv_nodes.clear()
+        self._ble_names.clear()
+        for device_id in lost:
+            await self.output.controller_did_lose_discovery(self, device_id)
+
+    def _listen_for_improv(self):
+        """Hear unprovisioned nodes through the router bound now, if there is one."""
         router = self._router
         self._ble_cancel = router.register(self, {UUID(improv.SERVICE_UUID)}) if router else None
 
