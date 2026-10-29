@@ -18,7 +18,7 @@ async def test_announced_node_becomes_a_discovery(
     assert len(output.received_discoveries) == 1
     discovered = output.received_discoveries[0]
     assert controller.discoveries == {discovered.id: discovered}
-    assert discovered.integration == controller.name
+    assert discovered.integration == controller.key  # the Hub creates its device in the controller's scope
 
 
 async def test_controller_stops_listening_on_stop(controller: ESPhomeController, mdns: FakeMDNS):
@@ -107,4 +107,4 @@ async def test_incomplete_announcement_never_raises(
 ):
     await mdns.announce(incomplete)  # must not break the SDK's discovery loop
 
-    assert output.errors == []
+    assert output.error_log == []

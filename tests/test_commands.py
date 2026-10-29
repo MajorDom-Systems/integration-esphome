@@ -13,9 +13,7 @@ from tests.helpers import param, values, wait_for_value, wait_until
 from tests.virtual.runner import VirtualDevice
 
 
-async def command(
-    controller: ESPhomeController, device: ESPhomeDevice, entity: str, sub_field: str, value: Any
-) -> None:
+async def command(controller: ESPhomeController, device: ESPhomeDevice, entity: str, sub_field: str, value: Any):
     target = param(device, entity, sub_field)
     await controller.send_command(
         DeviceCommand(device_id=device.id, parameter_id=target.id, value=value), device, target
@@ -136,7 +134,7 @@ async def test_command_to_an_offline_device_fails_visibly(
     with pytest.raises(ConnectionError):
         await command(controller, paired, "Relay", "state", True)
 
-    async with controller.dependencies.make_device_repository() as repo:
+    async with controller.platform.device_repository(controller) as repo:
         stored = await repo.get(paired.id, as_=ESPhomeDevice)
     assert stored is not None
     assert stored.last_error

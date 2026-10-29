@@ -13,13 +13,13 @@ from tests.virtual.runner import VirtualDevice
 
 
 async def stored_device(controller: ESPhomeController, device_id) -> ESPhomeDevice:
-    async with controller.dependencies.make_device_repository() as repo:
+    async with controller.platform.device_repository(controller) as repo:
         stored = await repo.get(device_id, as_=ESPhomeDevice)
     assert stored is not None
     return stored
 
 
-async def flip_relay(device: VirtualDevice) -> None:
+async def flip_relay(device: VirtualDevice):
     client = APIClient(device.address, device.port, "")
     await client.connect(login=True)
     try:
@@ -37,7 +37,9 @@ async def test_paired_devices_reconnect_when_the_hub_restarts(
     await controller.stop()
     output.connected_devices.clear()
     output.events.clear()
-    restarted = ESPhomeController(controller.dependencies)
+    restarted = ESPhomeController(controller.platform)
+    restarted.peripherals = controller.peripherals
+    restarted.output = controller.output
 
     await restarted.start()
     try:
@@ -78,7 +80,9 @@ async def test_startup_with_an_offline_device_does_not_block_and_recovers(
     await controller.stop()
     await device.stop()
     output.connected_devices.clear()
-    restarted = ESPhomeController(controller.dependencies)
+    restarted = ESPhomeController(controller.platform)
+    restarted.peripherals = controller.peripherals
+    restarted.output = controller.output
 
     async with asyncio.timeout(5):
         await restarted.start()  # a dead device must not hold the Hub's startup
@@ -94,7 +98,7 @@ async def test_startup_with_an_offline_device_does_not_block_and_recovers(
         await restarted.stop()
 
 
-async def _wait_unavailable(controller: ESPhomeController, paired: ESPhomeDevice) -> None:
+async def _wait_unavailable(controller: ESPhomeController, paired: ESPhomeDevice):
     deadline = asyncio.get_running_loop().time() + 20
     while asyncio.get_running_loop().time() < deadline:
         stored = await stored_device(controller, paired.id)

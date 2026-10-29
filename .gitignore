@@ -58,3 +58,6 @@ tests/virtual/sketches/.gitignore
 
 # Generated virtual nodes of the entity catalogue
 tests/virtual/nodes/
+
+# The dev runner's settings and keys
+.majordom-dev/

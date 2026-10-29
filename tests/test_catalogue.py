@@ -93,11 +93,11 @@ async def test_every_entity_kind_works_end_to_end(
     try:
         await mdns.announce(Advert(name=sketch.name, mac=sketch.mac, port=sketch.port))
         (discovery,) = controller.discoveries.values()
-        await hub_creates_device(controller.dependencies, discovery)
+        await hub_creates_device(controller.platform, discovery)
 
         await controller.pair_device(discovery, credentials=None)
 
-        async with controller.dependencies.make_device_repository() as repo:
+        async with controller.platform.device_repository(controller) as repo:
             device = await repo.get(discovery.id, as_=ESPhomeDevice)
         assert device is not None
         assert {p.integration_data.component_type for p in device.parameters} <= {kind}

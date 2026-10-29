@@ -4,19 +4,22 @@ Entities are real `aioesphomeapi` descriptions (what a device actually reports),
 """
 
 from typing import Any
+from unittest.mock import AsyncMock
 from uuid import UUID
 
 import pytest
 from aioesphomeapi import CameraInfo, LightInfo, SwitchInfo
+from majordom_integration_sdk import Endpoint, PeripheralChange, Peripherals, Platform
 from majordom_integration_sdk.schemas.command import DeviceCommand
 from majordom_integration_sdk.schemas.device import Discovery
 from majordom_integration_sdk.schemas.parameter import ParameterDataType, ParameterRole
 from majordom_integration_sdk.testing import RecordingControllerOutput
 
+import majordom_esphome
 from majordom_esphome.controller import ESPhomeController
 from majordom_esphome.models import ESPhomeDevice
 from tests.helpers import assert_not_paired, hub_creates_device, param
-from tests.virtual.mdns import Advert, FakeMDNS
+from tests.virtual.mdns import Advert, FakeMDNS, settle
 
 SWITCH_KEY = 7  # deliberately different from every other number in the tests
 
@@ -25,7 +28,7 @@ SWITCH_KEY = 7  # deliberately different from every other number in the tests
 async def mock_discovery(controller: ESPhomeController, mdns: FakeMDNS) -> Discovery:
     await mdns.announce(Advert())
     (found,) = controller.discoveries.values()
-    await hub_creates_device(controller.dependencies, found)
+    await hub_creates_device(controller.platform, found)
     return found
 
 
@@ -37,7 +40,7 @@ async def mock_paired(controller: ESPhomeController, mock_discovery: Discovery, 
         11: make_entity(LightInfo, 11, "Lamp", supported_color_modes=[3]),
     }
     await controller.pair_device(mock_discovery, credentials=None)
-    async with controller.dependencies.make_device_repository() as repo:
+    async with controller.platform.device_repository(controller) as repo:
         stored = await repo.get(mock_discovery.id, as_=ESPhomeDevice)
     assert stored is not None
     return stored
@@ -69,7 +72,7 @@ async def test_pairing_skips_entities_it_cannot_map(
 
     await controller.pair_device(mock_discovery, credentials=None)
 
-    async with controller.dependencies.make_device_repository() as repo:
+    async with controller.platform.device_repository(controller) as repo:
         stored = await repo.get(mock_discovery.id, as_=ESPhomeDevice)
     assert stored is not None
     assert {p.integration_data.entity_name for p in stored.parameters} == {"Relay"}
@@ -89,7 +92,7 @@ async def test_failed_pairing_is_cleaned_up_and_reported(
 
     connection.stop.assert_awaited_once()
     assert mock_discovery.id in controller.discoveries
-    await assert_not_paired(controller.dependencies, mock_discovery.id)
+    await assert_not_paired(controller.platform, mock_discovery.id)
     assert output.updated_discoveries[-1].last_error, "the user must see why pairing failed"
     assert output.connected_devices == []
 
@@ -118,7 +121,7 @@ async def test_command_to_disconnected_device_fails_visibly(
             DeviceCommand(device_id=mock_paired.id, parameter_id=relay.id, value=True), mock_paired, relay
         )
 
-    async with controller.dependencies.make_device_repository() as repo:
+    async with controller.platform.device_repository(controller) as repo:
         stored = await repo.get(mock_paired.id, as_=ESPhomeDevice)
     assert stored is not None
     assert stored.last_error, "a failed command must leave a user-readable last_error on the device"
@@ -132,7 +135,7 @@ async def test_command_on_read_only_parameter_is_rejected(
     _, connection = mock_connection
     connection.get_entities.return_value = {3: make_entity(SensorInfo, 3, "Temperature")}
     await controller.pair_device(mock_discovery, credentials=None)
-    async with controller.dependencies.make_device_repository() as repo:
+    async with controller.platform.device_repository(controller) as repo:
         stored = await repo.get(mock_discovery.id, as_=ESPhomeDevice)
     assert stored is not None
     temperature = param(stored, "Temperature")
@@ -173,3 +176,57 @@ async def test_fetch_of_unknown_device_raises(controller: ESPhomeController, moc
 
     with pytest.raises(ConnectionError):
         await controller.fetch(stranger)
+
+
+def test_it_needs_zeroconf_and_borrows_the_router_never_raw_bluetooth():
+    needs = {need.family: need for need in ESPhomeController.needs}
+    assert needs["mdns"].dialects == ["zeroconf"] and needs["mdns"].is_required
+    assert needs["ble"].accepts(Endpoint("ble", "router")) and not needs["ble"].is_required
+    assert not needs["ble"].accepts(Endpoint("ble", "bluez", "hci0"))
+
+
+def test_the_package_provides_its_controller_alone(platform: Platform):
+    (controller,) = majordom_esphome.peripherals(platform)
+
+    assert isinstance(controller, ESPhomeController) and controller.platform is platform
+    assert (controller.name, controller.key) == ("ESPHome", "esphome")
+
+
+async def test_a_border_router_coming_and_going_needs_no_restart(controller: ESPhomeController):
+    border_router = Endpoint("thread", "otbr-rest", "http://otbr:8081")
+
+    assert await controller.needed_peripheral_did_change(PeripheralChange("thread", None, border_router))
+    assert await controller.needed_peripheral_did_change(PeripheralChange("thread", border_router, None))
+
+
+async def test_another_zeroconf_restarts_it(controller: ESPhomeController):
+    zeroconf = controller.peripherals.endpoint("mdns")
+    moved = PeripheralChange("mdns", zeroconf, Endpoint("mdns", "zeroconf", "other", instance=zeroconf.instance))
+
+    assert not await controller.needed_peripheral_did_change(moved)
+
+
+async def test_a_start_cut_short_stops_cleanly_and_starts_again(
+    platform: Platform,
+    peripherals: Peripherals,
+    output: RecordingControllerOutput,
+    mdns: FakeMDNS,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    controller = ESPhomeController(platform)
+    controller.peripherals, controller.output = peripherals, output
+    monkeypatch.setattr(ESPhomeController, "_load_paired_devices", AsyncMock(side_effect=RuntimeError("no database")))
+    with pytest.raises(RuntimeError):
+        await controller.start()
+
+    await controller.stop()  # as the runtime does after a failed start, keeping the instance
+    await settle()
+    assert [browser for browser in mdns.browsers if not browser.cancelled] == []
+    monkeypatch.undo()
+
+    await controller.start()
+    try:
+        await mdns.announce(Advert())
+        assert len(controller.discoveries) == 1
+    finally:
+        await controller.stop()

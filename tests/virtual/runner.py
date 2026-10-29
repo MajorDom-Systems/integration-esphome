@@ -43,7 +43,7 @@ KEYLESS = Sketch("keyless.yaml", "test_node_keyless", 6056, "983569abf679")  # e
 SKETCHES = (PLAIN, ENCRYPTED, EXTRAS, KEYLESS)
 
 
-def build(sketch: Sketch) -> None:
+def build(sketch: Sketch):
     """Compile the sketch to a native binary (needs the `esphome` CLI on PATH). Takes a minute or two."""
     if shutil.which("esphome") is None:
         raise RuntimeError("`esphome` CLI not found: install it (e.g. `pipx install esphome`) to build virtual devices")
@@ -51,7 +51,7 @@ def build(sketch: Sketch) -> None:
 
 
 class VirtualDevice:
-    def __init__(self, sketch: Sketch = PLAIN) -> None:
+    def __init__(self, sketch: Sketch = PLAIN):
         self.sketch = sketch
         self._proc: subprocess.Popen[str] | None = None
         self._reader: threading.Thread | None = None
@@ -74,7 +74,7 @@ class VirtualDevice:
     def running(self) -> bool:
         return self._proc is not None and self._proc.poll() is None
 
-    async def start(self, timeout: float = 10.0) -> None:
+    async def start(self, timeout: float = 10.0):
         if not self.sketch.binary.exists():
             raise FileNotFoundError(
                 f"{self.sketch.binary} is not built: run `poetry run python -m tests.virtual.build`"
@@ -90,7 +90,7 @@ class VirtualDevice:
         self._reader.start()
         await self._wait_for_port(timeout)
 
-    async def stop(self) -> None:
+    async def stop(self):
         proc, self._proc = self._proc, None
         if proc is not None:
             if proc.poll() is None:
@@ -106,11 +106,11 @@ class VirtualDevice:
             if proc.stdout is not None:
                 proc.stdout.close()
 
-    async def restart(self) -> None:
+    async def restart(self):
         await self.stop()
         await self.start()
 
-    async def wait_log(self, text: str, timeout: float = 5.0) -> None:
+    async def wait_log(self, text: str, timeout: float = 5.0):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if text in self.log:
@@ -118,12 +118,12 @@ class VirtualDevice:
             await asyncio.sleep(0.05)
         raise TimeoutError(f"{text!r} not found in device log:\n{self.log[-2000:]}")
 
-    def _read_output(self, proc: subprocess.Popen[str]) -> None:
+    def _read_output(self, proc: subprocess.Popen[str]):
         assert proc.stdout is not None
         for line in proc.stdout:
             self._lines.append(line)
 
-    async def _wait_for_port(self, timeout: float) -> None:
+    async def _wait_for_port(self, timeout: float):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if not self.running:

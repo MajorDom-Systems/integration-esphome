@@ -23,7 +23,7 @@ async def encrypted_discovery(
 ) -> Discovery:
     await mdns.announce(Advert(name="test_node_enc", port=encrypted_device.port, encrypted=True))
     (found,) = controller.discoveries.values()
-    await hub_creates_device(controller.dependencies, found)
+    await hub_creates_device(controller.platform, found)
     return found
 
 
@@ -42,7 +42,7 @@ async def test_pairing_without_the_key_is_refused(
     with pytest.raises(ValueError):
         await controller.pair_device(encrypted_discovery, credentials)
 
-    await assert_not_paired(controller.dependencies, encrypted_discovery.id)
+    await assert_not_paired(controller.platform, encrypted_discovery.id)
 
 
 async def test_pairing_with_a_code_instead_of_the_key_is_refused(
@@ -59,7 +59,7 @@ async def test_pairing_with_a_wrong_key_fails_cleanly(
     with pytest.raises((ConnectionError, TimeoutError, ValueError)):
         await controller.pair_device(encrypted_discovery, secret(WRONG_KEY))
 
-    await assert_not_paired(controller.dependencies, encrypted_discovery.id)
+    await assert_not_paired(controller.platform, encrypted_discovery.id)
     assert output.connected_devices == []
     assert "key" in (output.updated_discoveries[-1].last_error or "").lower(), (
         "the user must be told the key was rejected"
@@ -72,7 +72,7 @@ async def test_pairing_with_the_key_works_like_a_plain_device(
 ):
     await controller.pair_device(encrypted_discovery, secret(KEY))
 
-    async with controller.dependencies.make_device_repository() as repo:
+    async with controller.platform.device_repository(controller) as repo:
         stored = await repo.get(encrypted_discovery.id, as_=ESPhomeDevice)
     assert stored is not None
     assert len(stored.parameters) == 33
@@ -87,7 +87,9 @@ async def test_encrypted_device_reconnects_after_hub_restart(
     await controller.pair_device(encrypted_discovery, secret(KEY))
     await controller.stop()
     output.connected_devices.clear()
-    restarted = ESPhomeController(controller.dependencies)
+    restarted = ESPhomeController(controller.platform)
+    restarted.peripherals = controller.peripherals
+    restarted.output = controller.output
 
     await restarted.start()
     try:

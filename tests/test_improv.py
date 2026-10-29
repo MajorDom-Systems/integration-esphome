@@ -1,50 +1,47 @@
 """Unprovisioned nodes over Improv BLE: found by their advert, given the Hub's Wi-Fi, then paired over the network.
 
-ESPHome host nodes have no BLE, so the node's Improv GATT service is scripted below, behind bleak's client: the real
-`py-improv-ble-client` runs against it. Once the node "joins" Wi-Fi, the compiled keyless virtual node appears over
-mDNS.
+ESPHome host nodes have no BLE, so the node's Improv GATT service is scripted below as the connection a Bluetooth source
+hands out; the SDK's real Bluetooth router routes its adverts and connections. Once the node "joins" Wi-Fi, the compiled
+keyless virtual node appears over mDNS.
 """
 
 import asyncio
-import dataclasses
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
-from types import SimpleNamespace
-from typing import Any
+from dataclasses import replace
 
 import pytest
 import pytest_asyncio
 from bleak.backends.device import BLEDevice
 from bleak.backends.scanner import AdvertisementData
-from bleak.exc import BleakError
 from improv_ble_client import SERVICE_DATA_UUID, SERVICE_UUID, Error, State
 from improv_ble_client.protocol import (
     CHARACTERISTIC_UUID_CAPABILITIES,
     CHARACTERISTIC_UUID_ERROR,
+    CHARACTERISTIC_UUID_RPC_COMMAND,
     CHARACTERISTIC_UUID_RPC_RESULT,
     CHARACTERISTIC_UUID_STATE,
+    IMPROV_CHARACTERISTICS,
     WiFiSettingsCmd,
     WiFiSettingsRes,
 )
-from majordom_integration_sdk import MissingCredentialsError
-from majordom_integration_sdk.controller import AbstractController
-from majordom_integration_sdk.discovery.ble_discovery import BLEDiscoveryInfo
+from majordom_integration_sdk import MissingCredentialsError, Platform, WifiCredentials
+from majordom_integration_sdk.capabilities import BLE_ROUTER, BLEDiscoveryInfo, GattCharacteristic, GattService
+from majordom_integration_sdk.peripherals import PeripheralChange, Peripherals
+from majordom_integration_sdk.runtime.peripherals.providers.ble.router import BLEService
 from majordom_integration_sdk.schemas import CredentialsType
 from majordom_integration_sdk.schemas.device import Discovery
-from majordom_integration_sdk.testing import RecordingControllerOutput
+from majordom_integration_sdk.testing import FakeBLESource, RecordingControllerOutput
 
 from majordom_esphome import controller as controller_module
 from majordom_esphome import improv
 from majordom_esphome.controller import ESPhomeController
 from majordom_esphome.models import ESPhomeDevice
 from tests.helpers import (
-    HubDependencies,
-    WiFi,
     assert_not_paired,
     hub_creates_device,
     leaked_tasks,
     wait_until,
-    with_wifi,
 )
 from tests.virtual.mdns import Advert, FakeMDNS
 from tests.virtual.runner import KEYLESS, VirtualDevice
@@ -52,27 +49,33 @@ from tests.virtual.runner import KEYLESS, VirtualDevice
 pytestmark = pytest.mark.timeout(60)
 
 
-HOME = WiFi("Home", "correct horse battery")
+def router_of(controller: ESPhomeController) -> BLEService:
+    router = controller.peripherals.instance(BLE_ROUTER)
+    assert isinstance(router, BLEService)
+    return router
+
+
+HOME = WifiCredentials("Home", "correct horse battery")
+HANDLES = {uuid: 0x11 + i for i, uuid in enumerate(IMPROV_CHARACTERISTICS)}
 
 
 class FakeImprovNode:
-    """An unprovisioned ESPHome node's Improv service, as py-improv-ble-client sees it through a bleak client."""
+    """An unprovisioned ESPHome node's Improv GATT service, as the `BLEConnection` a Bluetooth source hands out."""
 
-    def __init__(self, name: str = KEYLESS.name, address: str = "AA:BB:CC:DD:EE:01") -> None:
+    def __init__(self, name: str = KEYLESS.name, address: str = "AA:BB:CC:DD:EE:01"):
         self.name, self.address = name, address
         self.state = State.AUTHORIZED
         self.password = HOME.password  # of the network it can join
         self.fails_with: Error | None = None
-        self.reachable = True
-        self.received: list[WiFi] = []
+        self.received: list[WifiCredentials] = []
         self.on_joined: Callable[[], Awaitable[None]] | None = None  # it shows up on the network
-        self._handlers: dict[str, Callable[[Any, bytearray], Awaitable[None]]] = {}
+        self._callbacks: dict[int, Callable[[bytes], None]] = {}
 
     def advertisement(self, named: bool = True) -> AdvertisementData:
         return AdvertisementData(
             local_name=self.name if named else None,
             manufacturer_data={},
-            service_data={SERVICE_DATA_UUID: bytes([self.state, 0, 0, 0, 0, 0])},
+            service_data={SERVICE_DATA_UUID: self._service_data()},
             service_uuids=[SERVICE_UUID],
             tx_power=None,
             rssi=-60,
@@ -82,96 +85,110 @@ class FakeImprovNode:
     def info(self, named: bool = True) -> BLEDiscoveryInfo:
         return BLEDiscoveryInfo(BLEDevice(self.address, None, None), self.advertisement(named))
 
-    async def press_button(self) -> None:
+    async def advertise(self, source: FakeBLESource, named: bool = True, rssi: int = -60):
+        """Heard by ``source``; returns once the SDK has passed the advert on."""
+        name = self.name if named else None
+        source.advertise(self.address, rssi, name, [SERVICE_UUID], {SERVICE_DATA_UUID: self._service_data()})
+        await asyncio.sleep(0.05)
+
+    async def press_button(self):
         self.state = State.AUTHORIZED
-        await self._notify(CHARACTERISTIC_UUID_STATE, self.state)
+        self._notify(CHARACTERISTIC_UUID_STATE, self.state)
 
-    # bleak's client, as bleak-retry-connector's `establish_connection` returns it
+    def _service_data(self) -> bytes:
+        return bytes([self.state, 0, 0, 0, 0, 0])
 
-    async def establish_connection(self, *args: Any, **kwargs: Any) -> "FakeImprovNode":
-        if not self.reachable:
-            raise BleakError("out of range")
-        return self
+    # BLEConnection
 
-    is_connected = True
-    services = SimpleNamespace(get_characteristic=lambda uuid: SimpleNamespace(uuid=uuid))
+    @property
+    def mtu(self) -> int:
+        return 247
 
-    async def start_notify(self, uuid: str, handler: Callable[[Any, bytearray], Awaitable[None]]) -> None:
-        self._handlers[uuid] = handler
+    async def services(self) -> list[GattService]:
+        characteristics = tuple(GattCharacteristic(uuid, handle, ("read",)) for uuid, handle in HANDLES.items())
+        return [GattService(SERVICE_UUID, 0x10, characteristics)]
 
-    async def read_gatt_char(self, uuid: str) -> bytearray:
-        values = {CHARACTERISTIC_UUID_STATE: self.state, CHARACTERISTIC_UUID_CAPABILITIES: 0}
-        return bytearray([values.get(uuid, Error.NO_ERROR)])
+    async def read(self, handle: int) -> bytes:
+        values = {HANDLES[CHARACTERISTIC_UUID_STATE]: self.state, HANDLES[CHARACTERISTIC_UUID_CAPABILITIES]: 0}
+        return bytes([values.get(handle, Error.NO_ERROR)])
 
-    async def write_gatt_char(self, uuid: str, data: bytes, response: bool = True) -> None:
+    async def write(self, handle: int, data: bytes, is_response_needed: bool = True):
+        assert handle == HANDLES[CHARACTERISTIC_UUID_RPC_COMMAND]
         command = WiFiSettingsCmd.from_bytes(data)
-        asyncio.get_running_loop().create_task(self._join(WiFi(command.ssid.decode(), command.password.decode())))
+        asyncio.get_running_loop().create_task(
+            self._join(WifiCredentials(command.ssid.decode(), command.password.decode()))
+        )
 
-    async def disconnect(self) -> None:
-        pass
+    async def start_notify(self, handle: int, callback: Callable[[bytes], None]):
+        self._callbacks[handle] = callback
 
-    async def clear_cache(self) -> None:
-        pass
+    async def stop_notify(self, handle: int):
+        self._callbacks.pop(handle, None)
 
-    async def _join(self, wifi: WiFi) -> None:
+    async def disconnect(self):
+        self._callbacks.clear()
+
+    async def _join(self, wifi: WifiCredentials):
         if self.state == State.AUTHORIZATION_REQUIRED:
-            await self._notify(CHARACTERISTIC_UUID_ERROR, Error.NOT_AUTHORIZED)
+            self._notify(CHARACTERISTIC_UUID_ERROR, Error.NOT_AUTHORIZED)
             return
         self.received.append(wifi)
-        await self._notify(CHARACTERISTIC_UUID_STATE, State.PROVISIONING)
+        self._notify(CHARACTERISTIC_UUID_ERROR, Error.NO_ERROR)
+        self._notify(CHARACTERISTIC_UUID_STATE, State.PROVISIONING)
         error = self.fails_with or (Error.UNABLE_TO_CONNECT if wifi.password != self.password else None)
         if error is not None:
-            await self._notify(CHARACTERISTIC_UUID_ERROR, error)
-            await self._notify(CHARACTERISTIC_UUID_STATE, State.AUTHORIZED)
+            self._notify(CHARACTERISTIC_UUID_ERROR, error)
+            self._notify(CHARACTERISTIC_UUID_STATE, State.AUTHORIZED)
             return
         self.state = State.PROVISIONED
-        await self._notify(CHARACTERISTIC_UUID_STATE, self.state)
-        await self._handlers[CHARACTERISTIC_UUID_RPC_RESULT](
-            SimpleNamespace(uuid=CHARACTERISTIC_UUID_RPC_RESULT),
-            bytearray(WiFiSettingsRes(b"http://127.0.0.1", []).as_bytes()),
-        )
+        self._notify(CHARACTERISTIC_UUID_STATE, self.state)
+        if callback := self._callbacks.get(HANDLES[CHARACTERISTIC_UUID_RPC_RESULT]):
+            callback(WiFiSettingsRes(b"http://127.0.0.1", []).as_bytes())
         if self.on_joined is not None:
             await self.on_joined()
 
-    async def _notify(self, uuid: str, value: int) -> None:
-        if handler := self._handlers.get(uuid):
-            await handler(SimpleNamespace(uuid=uuid), bytearray([value]))
-
-
-@pytest.fixture
-def hub_wifi() -> list[WiFi | None]:
-    return [HOME]
-
-
-@pytest_asyncio.fixture
-async def deps(deps: AbstractController.Dependencies, hub_wifi: list[WiFi | None]) -> HubDependencies:
-    async def wifi_credentials() -> WiFi | None:
-        return hub_wifi[0]
-
-    return with_wifi(deps, wifi_credentials)
+    def _notify(self, uuid: str, value: int):
+        if callback := self._callbacks.get(HANDLES[uuid]):
+            callback(bytes([value]))
 
 
 @pytest.fixture
 def node(monkeypatch: pytest.MonkeyPatch) -> FakeImprovNode:
-    fake = FakeImprovNode()
-    monkeypatch.setattr("improv_ble_client.client.establish_connection", fake.establish_connection)
     monkeypatch.setattr(improv, "AUTHORIZATION_TIMEOUT", 1.0)
+    monkeypatch.setattr(improv, "LEASE_TIMEOUT", 0.5)
     monkeypatch.setattr(controller_module, "NODE_APPEAR_TIMEOUT", 1.0)
-    return fake
+    return FakeImprovNode()
 
 
-async def advertise(controller: ESPhomeController, info: BLEDiscoveryInfo) -> None:
-    """What the SDK's BLE scanner does with an advert: it reaches the listeners registered for its services."""
-    await controller.dependencies.ble_discovery_service._handle_advertisement(
-        info.source, info.device, info.advertisement
-    )
+@pytest.fixture
+def radio(node: FakeImprovNode) -> FakeBLESource:
+    """The Hub's own Bluetooth adapter."""
+    return FakeBLESource("hci0", connection=node)
+
+
+@pytest.fixture
+def platform(platform: Platform) -> Platform:
+    return replace(platform, wifi=HOME)
 
 
 @pytest_asyncio.fixture
-async def ble_discovery(controller: ESPhomeController, node: FakeImprovNode) -> Discovery:
-    await advertise(controller, node.info())
+async def router(radio: FakeBLESource) -> AsyncIterator[BLEService]:
+    ble = BLEService(sources=[radio])
+    await ble.start()
+    yield ble
+    await ble.stop()
+
+
+@pytest.fixture
+def peripherals(peripherals: Peripherals, router: BLEService) -> Peripherals:
+    return Peripherals({**peripherals.bound, "ble": router.endpoint})
+
+
+@pytest_asyncio.fixture
+async def ble_discovery(controller: ESPhomeController, node: FakeImprovNode, radio: FakeBLESource) -> Discovery:
+    await node.advertise(radio)
     (found,) = controller.discoveries.values()
-    await hub_creates_device(controller.dependencies, found)
+    await hub_creates_device(controller.platform, found)
     return found
 
 
@@ -183,8 +200,8 @@ async def keyless_device() -> AsyncIterator[VirtualDevice]:
     await virtual.stop()
 
 
-def joins_as_keyless_device(node: FakeImprovNode, mdns: FakeMDNS) -> None:
-    async def appear() -> None:
+def joins_as_keyless_device(node: FakeImprovNode, mdns: FakeMDNS):
+    async def appear():
         await mdns.announce(Advert(name=KEYLESS.name, mac=KEYLESS.mac, port=KEYLESS.port, keyless=True))
 
     node.on_joined = appear
@@ -198,9 +215,9 @@ async def last_error(output: RecordingControllerOutput, discovery: Discovery) ->
 
 
 async def test_a_node_waiting_for_wifi_is_discovered_by_its_name(
-    controller: ESPhomeController, node: FakeImprovNode, output: RecordingControllerOutput
+    controller: ESPhomeController, node: FakeImprovNode, radio: FakeBLESource, output: RecordingControllerOutput
 ):
-    await advertise(controller, node.info())
+    await node.advertise(radio)
 
     (discovery,) = output.received_discoveries
     assert discovery.id == controller.device_uuid(f"improv:{node.name}")
@@ -209,27 +226,27 @@ async def test_a_node_waiting_for_wifi_is_discovered_by_its_name(
 
 
 async def test_the_discovery_id_follows_the_name_not_the_ble_address(
-    controller: ESPhomeController, node: FakeImprovNode
+    controller: ESPhomeController, node: FakeImprovNode, radio: FakeBLESource
 ):
-    await advertise(controller, node.info())
+    await node.advertise(radio)
     first = set(controller.discoveries)
-    await controller.ble_did_remove_device(controller.dependencies.ble_discovery_service, node.info())
+    await controller.ble_did_remove_device(router_of(controller), node.info())
     node.address = "AA:BB:CC:DD:EE:02"  # a random (resolvable private) address changes
 
-    await advertise(controller, node.info())
+    await node.advertise(radio)
 
     assert set(controller.discoveries) == first
 
 
 async def test_the_name_is_remembered_for_the_adverts_that_do_not_carry_it(
-    controller: ESPhomeController, node: FakeImprovNode, output: RecordingControllerOutput
+    controller: ESPhomeController, node: FakeImprovNode, radio: FakeBLESource, output: RecordingControllerOutput
 ):
-    await advertise(controller, node.info(named=False))
+    await node.advertise(radio, named=False)
     assert controller.discoveries == {}, "without its name the node has no stable identity yet"
 
-    await advertise(controller, node.info())
+    await node.advertise(radio)
     node.state = State.AUTHORIZATION_REQUIRED
-    await advertise(controller, node.info(named=False))
+    await node.advertise(radio, named=False)
 
     assert len(output.received_discoveries) == 1
     assert list(controller.discoveries) == [output.received_discoveries[0].id]
@@ -237,32 +254,78 @@ async def test_the_name_is_remembered_for_the_adverts_that_do_not_carry_it(
 
 @pytest.mark.parametrize("state", [State.PROVISIONING, State.PROVISIONED])
 async def test_a_node_that_already_has_wifi_is_not_offered(
-    controller: ESPhomeController, node: FakeImprovNode, state: State
+    controller: ESPhomeController, node: FakeImprovNode, radio: FakeBLESource, state: State
 ):
     node.state = state
 
-    await advertise(controller, node.info())
+    await node.advertise(radio)
 
     assert controller.discoveries == {}
 
 
 async def test_a_node_that_stops_advertising_is_lost(
-    controller: ESPhomeController, node: FakeImprovNode, output: RecordingControllerOutput
+    controller: ESPhomeController, node: FakeImprovNode, radio: FakeBLESource, output: RecordingControllerOutput
 ):
-    await advertise(controller, node.info())
+    await node.advertise(radio)
 
-    await controller.ble_did_remove_device(controller.dependencies.ble_discovery_service, node.info(named=False))
+    await controller.ble_did_remove_device(router_of(controller), node.info(named=False))
 
     assert controller.discoveries == {}
     assert output.lost_discoveries == [output.received_discoveries[0].id]
 
 
-async def test_ble_discovery_stops_with_the_controller(controller: ESPhomeController, node: FakeImprovNode):
+async def test_ble_discovery_stops_with_the_controller(
+    controller: ESPhomeController, node: FakeImprovNode, radio: FakeBLESource
+):
     await controller.stop()
 
-    await advertise(controller, node.info())
+    await node.advertise(radio)
 
     assert controller.discoveries == {}
+
+
+async def test_a_router_handed_over_once_it_runs_is_listened_to_without_a_restart(
+    platform: Platform, peripherals: Peripherals, router: BLEService, node: FakeImprovNode, radio: FakeBLESource
+):
+    controller = ESPhomeController(platform)
+    controller.peripherals = Peripherals({"mdns": peripherals.endpoint("mdns")})
+    await controller.start()
+    try:
+        controller.peripherals = peripherals
+        assert await controller.needed_peripheral_did_change(PeripheralChange("ble", None, router.endpoint))
+
+        await node.advertise(radio)
+
+        assert len(controller.discoveries) == 1
+    finally:
+        await controller.stop()
+
+
+async def test_a_lost_router_is_let_go_without_a_restart(
+    controller: ESPhomeController, router: BLEService, node: FakeImprovNode, radio: FakeBLESource
+):
+    controller.peripherals = Peripherals({"mdns": controller.peripherals.endpoint("mdns")})
+    assert await controller.needed_peripheral_did_change(PeripheralChange("ble", router.endpoint, None))
+
+    await node.advertise(radio)
+
+    assert controller.discoveries == {}
+
+
+async def test_the_nodes_heard_through_a_lost_router_are_lost_with_it(
+    controller: ESPhomeController,
+    router: BLEService,
+    node: FakeImprovNode,
+    radio: FakeBLESource,
+    output: RecordingControllerOutput,
+):
+    await node.advertise(radio)
+
+    controller.peripherals = Peripherals({"mdns": controller.peripherals.endpoint("mdns")})
+    assert await controller.needed_peripheral_did_change(PeripheralChange("ble", router.endpoint, None))
+
+    assert controller.discoveries == {}, "nothing can set them up without a router"
+    assert output.lost_discoveries == [output.received_discoveries[0].id]
 
 
 # Pairing: Wi-Fi over BLE, then the node over the network
@@ -283,7 +346,7 @@ async def test_pairing_gives_the_node_the_hubs_wifi_then_pairs_it_with_a_key_of_
     assert node.received == [HOME]
     assert device_id is not None
     assert device_id == controller.device_uuid(KEYLESS.mac), "the device takes the node's own identity"
-    async with controller.dependencies.make_device_repository() as repo:
+    async with controller.platform.device_repository(controller) as repo:
         device = await repo.get(device_id, as_=ESPhomeDevice)
         assert await repo.get(ble_discovery.id) is None, "the Hub's device moved to the node's identity"
     assert device is not None
@@ -293,6 +356,33 @@ async def test_pairing_gives_the_node_the_hubs_wifi_then_pairs_it_with_a_key_of_
     assert output.connected_devices == [device_id]
     assert controller.discoveries == {}
     assert device_id in output.lost_discoveries, "the node's mDNS discovery was paired through its BLE one"
+
+
+async def test_a_paired_node_set_up_again_fails_fast_as_already_paired(
+    controller: ESPhomeController,
+    ble_discovery: Discovery,
+    node: FakeImprovNode,
+    radio: FakeBLESource,
+    mdns: FakeMDNS,
+    keyless_device: VirtualDevice,
+    output: RecordingControllerOutput,
+):
+    """Its Wi-Fi was reset: it waits for Wi-Fi again, joins, and turns out to be a device the Hub has."""
+    joins_as_keyless_device(node, mdns)
+    await controller.pair_device(ble_discovery, credentials=None)
+    await node.advertise(radio)  # provisioned
+    node.state = State.AUTHORIZED  # its Wi-Fi reset: it left the network, and waits for Wi-Fi again
+    await mdns.goodbye(Advert(name=KEYLESS.name))
+    await node.advertise(radio)
+    (again,) = controller.discoveries.values()
+    await hub_creates_device(controller.platform, again, name="Another relay")
+
+    with pytest.raises(ValueError, match="already paired as Kitchen relay"):
+        async with asyncio.timeout(controller_module.NODE_APPEAR_TIMEOUT / 2):
+            await controller.pair_device(again, credentials=None)
+
+    assert "already paired" in await last_error(output, again)
+    await assert_not_paired(controller.platform, again.id)
 
 
 async def test_a_node_waiting_for_its_button_tells_the_user_then_carries_on(
@@ -314,6 +404,48 @@ async def test_a_node_waiting_for_its_button_tells_the_user_then_carries_on(
     assert node.received == [HOME]
 
 
+async def unheard_once_given_wifi(router: BLEService, node: FakeImprovNode):
+    """Given Wi-Fi, the node stops advertising Improv: the router says it is gone while it is awaited on the network."""
+    router._removal_grace_sec = 0.2
+    await wait_until(lambda: node.received, message="the node to be given Wi-Fi")
+    await asyncio.sleep(0.3)  # the lease ended, nothing heard since
+    await router.perform_scan()  # the eviction loop's check
+    assert router.devices() == []
+
+
+async def test_a_node_being_set_up_stays_offered_though_no_radio_hears_it(
+    controller: ESPhomeController,
+    ble_discovery: Discovery,
+    node: FakeImprovNode,
+    router: BLEService,
+    output: RecordingControllerOutput,
+):
+    pairing = asyncio.create_task(controller.pair_device(ble_discovery, credentials=None))
+
+    await unheard_once_given_wifi(router, node)
+
+    assert ble_discovery.id in controller.discoveries and output.lost_discoveries == []
+    with pytest.raises(TimeoutError):  # given Wi-Fi, but it never shows up in this test
+        await pairing
+
+
+async def test_a_failed_setup_loses_a_node_no_radio_hears_any_more(
+    controller: ESPhomeController,
+    ble_discovery: Discovery,
+    node: FakeImprovNode,
+    router: BLEService,
+    output: RecordingControllerOutput,
+):
+    """Its removal came while it was set up: none comes again."""
+    pairing = asyncio.create_task(controller.pair_device(ble_discovery, credentials=None))
+    await unheard_once_given_wifi(router, node)
+
+    with pytest.raises(TimeoutError):
+        await pairing
+
+    assert ble_discovery.id not in controller.discoveries and output.lost_discoveries == [ble_discovery.id]
+
+
 async def test_a_button_never_pressed_fails_with_the_instruction(
     controller: ESPhomeController, ble_discovery: Discovery, node: FakeImprovNode, output: RecordingControllerOutput
 ):
@@ -324,7 +456,7 @@ async def test_a_button_never_pressed_fails_with_the_instruction(
 
     assert node.received == []
     assert "press the button" in (await last_error(output, ble_discovery)).lower()
-    await assert_not_paired(controller.dependencies, ble_discovery.id)
+    await assert_not_paired(controller.platform, ble_discovery.id)
     assert leaked_tasks() == []
 
 
@@ -350,7 +482,7 @@ async def test_an_improv_error_fails_pairing_with_a_clear_reason(
         await controller.pair_device(ble_discovery, credentials=None)
 
     assert told in (await last_error(output, ble_discovery)).lower()
-    await assert_not_paired(controller.dependencies, ble_discovery.id)
+    await assert_not_paired(controller.platform, ble_discovery.id)
     assert ble_discovery.id in controller.discoveries, "the user can try again"
 
 
@@ -373,14 +505,48 @@ async def test_a_wrong_wifi_password_is_reported_and_never_logged(
 
 
 async def test_a_node_out_of_ble_range_fails_with_a_clear_reason(
-    controller: ESPhomeController, ble_discovery: Discovery, node: FakeImprovNode, output: RecordingControllerOutput
+    controller: ESPhomeController, ble_discovery: Discovery, radio: FakeBLESource, output: RecordingControllerOutput
 ):
-    node.reachable = False
+    radio.connection = None
 
     with pytest.raises(improv.SetupError):
         await controller.pair_device(ble_discovery, credentials=None)
 
     assert "bluetooth" in (await last_error(output, ble_discovery)).lower()
+
+
+async def test_bluetooth_held_by_another_integration_fails_with_a_clear_reason(
+    controller: ESPhomeController, ble_discovery: Discovery, node: FakeImprovNode, output: RecordingControllerOutput
+):
+    async with router_of(controller).exclusive(node.address, owner="matter"):
+        with pytest.raises(improv.SetupError):
+            await controller.pair_device(ble_discovery, credentials=None)
+
+    assert node.received == []
+    assert "busy" in (await last_error(output, ble_discovery)).lower()
+
+
+async def test_a_node_heard_best_through_another_esphome_node_is_set_up_through_it(
+    controller: ESPhomeController,
+    node: FakeImprovNode,
+    radio: FakeBLESource,
+    mdns: FakeMDNS,
+    keyless_device: VirtualDevice,
+):
+    proxy = FakeBLESource("esphome:a0b1c2d3e4f5", connection=node)
+    router = router_of(controller)
+    await router.add_source(proxy)
+    radio.connection = None  # the Hub's adapter barely hears it: only the ESPHome node can connect
+    await node.advertise(radio, rssi=-95)
+    await node.advertise(proxy, rssi=-50)
+    (discovery,) = controller.discoveries.values()
+    await hub_creates_device(controller.platform, discovery)
+    joins_as_keyless_device(node, mdns)
+
+    assert await controller.pair_device(discovery, credentials=None) == controller.device_uuid(KEYLESS.mac)
+
+    assert node.received == [HOME]
+    assert (proxy.connected, radio.connected) == ([node.address], [])
 
 
 async def test_a_node_that_never_shows_up_on_the_network_times_out_with_a_clear_reason(
@@ -391,7 +557,7 @@ async def test_a_node_that_never_shows_up_on_the_network_times_out_with_a_clear_
 
     assert node.received == [HOME]
     assert "did not show up on the network" in await last_error(output, ble_discovery)
-    await assert_not_paired(controller.dependencies, ble_discovery.id)
+    await assert_not_paired(controller.platform, ble_discovery.id)
     assert leaked_tasks() == []
 
 
@@ -399,13 +565,13 @@ async def test_a_hub_without_wifi_cannot_set_up_the_node(
     controller: ESPhomeController,
     ble_discovery: Discovery,
     node: FakeImprovNode,
-    hub_wifi: list[WiFi | None],
+    radio: FakeBLESource,
 ):
     """A Hub on Ethernet: told apart from any other failure, before the node is touched, so the app can ask for the
     Wi-Fi the node should join (the Hub saves it for the next attempt). The Hub returns the error to the app's pairing
     request, so the discovery's last_error is left as it was."""
-    hub_wifi[0] = None
-    node.reachable = False  # any BLE step would fail with another error
+    controller.platform = replace(controller.platform, wifi=None)
+    radio.connection = None  # any BLE step would fail with another error
 
     with pytest.raises(MissingCredentialsError) as raised:
         await controller.pair_device(ble_discovery, credentials=None)
@@ -413,38 +579,76 @@ async def test_a_hub_without_wifi_cannot_set_up_the_node(
     assert raised.value.type == MissingCredentialsError.WIFI
     assert node.received == []
     assert controller.discoveries[ble_discovery.id].last_error is None
-    await assert_not_paired(controller.dependencies, ble_discovery.id)
-
-
-async def test_a_hub_whose_sdk_has_no_wifi_credentials_cannot_set_up_the_node_either(
-    deps: HubDependencies, node: FakeImprovNode
-):
-    controller = ESPhomeController(dataclasses.replace(deps, wifi_credentials=None))
-    await controller.start()
-    try:
-        await advertise(controller, node.info())
-        (found,) = controller.discoveries.values()
-        await hub_creates_device(controller.dependencies, found)
-
-        with pytest.raises(MissingCredentialsError):
-            await controller.pair_device(found, credentials=None)
-
-        assert node.received == []
-        assert controller.discoveries[found.id].last_error is None
-    finally:
-        await controller.stop()
+    await assert_not_paired(controller.platform, ble_discovery.id)
 
 
 async def test_the_reason_stays_on_the_discovery_while_the_node_keeps_advertising(
-    controller: ESPhomeController, ble_discovery: Discovery, node: FakeImprovNode
+    controller: ESPhomeController, ble_discovery: Discovery, node: FakeImprovNode, radio: FakeBLESource
 ):
     node.fails_with = Error.UNKNOWN_ERROR
     with pytest.raises(improv.SetupError):
         await controller.pair_device(ble_discovery, credentials=None)
 
-    await advertise(controller, node.info(named=False))  # a changed advert: the SDK passes it on
+    await node.advertise(radio, named=False)  # a changed advert: the SDK passes it on
 
     assert controller.discoveries[ble_discovery.id].last_error
+
+
+# A stop meeting a setup: nothing can hear the node any more, and a run started meanwhile didn't begin it
+
+
+async def test_a_setup_waiting_for_the_node_on_the_network_ends_with_a_stop(
+    controller: ESPhomeController, ble_discovery: Discovery, node: FakeImprovNode
+):
+    joined = asyncio.Event()
+
+    async def appear():
+        joined.set()  # on Wi-Fi, not announced yet
+
+    node.on_joined = appear
+    pairing = asyncio.create_task(controller.pair_device(ble_discovery, credentials=None))
+    await asyncio.wait_for(joined.wait(), 5)
+
+    await controller.stop()
+
+    with pytest.raises(ConnectionError, match="stopped"):
+        await asyncio.wait_for(pairing, 0.5)  # not after NODE_APPEAR_TIMEOUT
+    await assert_not_paired(controller.platform, ble_discovery.id)
+    assert controller._joining == {} and leaked_tasks() == []
+
+
+async def test_a_setup_waiting_for_the_button_ends_with_a_stop(
+    controller: ESPhomeController, ble_discovery: Discovery, node: FakeImprovNode, router: BLEService
+):
+    node.state = State.AUTHORIZATION_REQUIRED
+    pairing = asyncio.create_task(controller.pair_device(ble_discovery, credentials=None))
+    await wait_until(
+        lambda: "button" in (controller.discoveries[ble_discovery.id].last_error or ""), 5, "the instruction"
+    )
+
+    await controller.stop()
+
+    with pytest.raises(ConnectionError, match="stopped"):
+        await asyncio.wait_for(pairing, 0.5)  # not after AUTHORIZATION_TIMEOUT
+    assert router._leased == {}, "the node's radio is free again"
+    assert node.received == [] and leaked_tasks() == []
+
+
+async def test_a_setup_whose_request_went_away_lets_go_of_the_node(
+    controller: ESPhomeController, ble_discovery: Discovery, node: FakeImprovNode, router: BLEService
+):
+    node.state = State.AUTHORIZATION_REQUIRED
+    pairing = asyncio.create_task(controller.pair_device(ble_discovery, credentials=None))
+    await wait_until(
+        lambda: "button" in (controller.discoveries[ble_discovery.id].last_error or ""), 5, "the instruction"
+    )
+
+    pairing.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await pairing
+    assert router._leased == {} and controller._joining == {}
+    assert leaked_tasks() == []
 
 
 @pytest.mark.parametrize(

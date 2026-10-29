@@ -35,15 +35,15 @@ async def extras_device() -> AsyncIterator[VirtualDevice]:
 async def extras(controller: ESPhomeController, mdns: FakeMDNS, extras_device: VirtualDevice) -> ESPhomeDevice:
     await mdns.announce(Advert(name=EXTRAS.name, mac=EXTRAS.mac, port=EXTRAS.port))
     (discovery,) = controller.discoveries.values()
-    await hub_creates_device(controller.dependencies, discovery)
+    await hub_creates_device(controller.platform, discovery)
     await controller.pair_device(discovery, credentials=None)
-    async with controller.dependencies.make_device_repository() as repo:
+    async with controller.platform.device_repository(controller) as repo:
         stored = await repo.get(discovery.id, as_=ESPhomeDevice)
     assert stored is not None
     return stored
 
 
-async def send(controller: ESPhomeController, device: ESPhomeDevice, entity: str, sub_field: str, value) -> None:
+async def send(controller: ESPhomeController, device: ESPhomeDevice, entity: str, sub_field: str, value):
     target = param(device, entity, sub_field)
     await controller.send_command(
         DeviceCommand(device_id=device.id, parameter_id=target.id, value=value), device, target

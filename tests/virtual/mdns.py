@@ -6,7 +6,7 @@ announcements are delivered on demand and nothing is ever sent to (or heard from
 
 import asyncio
 import socket
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any
@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 MDNS_TYPE = "_esphomelib._tcp.local."
 NOISE_PROTOCOL = "Noise_NNpsk0_25519_ChaChaPoly_SHA256"
-SDK_MODULE = "majordom_integration_sdk.discovery.zeroconf_discovery"
+SDK_MODULE = "majordom_integration_sdk.runtime.peripherals.providers.zeroconf"
 
 
 @dataclass
@@ -52,17 +52,17 @@ class Advert:
 
 
 class _BrowserStub:
-    def __init__(self, zeroconf: Any, types: list[str], listener: Any) -> None:
+    def __init__(self, zeroconf: Any, types: list[str], listener: Any):
         self.types = types
         self.listener = listener
         self.cancelled = False
 
-    async def async_cancel(self) -> None:
+    async def async_cancel(self):
         self.cancelled = True
 
 
 class FakeMDNS:
-    def __init__(self) -> None:
+    def __init__(self):
         self.adverts: dict[str, Advert] = {}
         self.browsers: list[_BrowserStub] = []
         self._zeroconf = MagicMock(name="zeroconf")
@@ -76,7 +76,7 @@ class FakeMDNS:
         adverts = self.adverts
 
         class ServiceInfoStub:
-            def __init__(self, type_: str, name: str) -> None:
+            def __init__(self, type_: str, name: str):
                 self.type, self.name = type_, name
                 self.weight = self.priority = 0
                 self.host_ttl, self.other_ttl, self.interface_index, self.text = 120, 4500, None, b""
@@ -103,7 +103,7 @@ class FakeMDNS:
 
         return ServiceInfoStub(type_, name)
 
-    async def announce(self, advert: Advert) -> None:
+    async def announce(self, advert: Advert):
         """The node appears, or announces itself again with changed records."""
         known = advert.fqdn in self.adverts
         self.adverts[advert.fqdn] = advert
@@ -114,7 +114,7 @@ class FakeMDNS:
                 browser.listener.add_service(self._zeroconf, MDNS_TYPE, advert.fqdn)
         await settle()
 
-    async def goodbye(self, advert: Advert) -> None:
+    async def goodbye(self, advert: Advert):
         self.adverts.pop(advert.fqdn, None)
         for browser in self._listening():
             browser.listener.remove_service(self._zeroconf, MDNS_TYPE, advert.fqdn)
@@ -124,14 +124,14 @@ class FakeMDNS:
         return [b for b in self.browsers if not b.cancelled and MDNS_TYPE in b.types]
 
 
-async def settle() -> None:
+async def settle():
     """Let the SDK resolve, deliver and the controller handle an announcement: no I/O is involved."""
     for _ in range(20):
         await asyncio.sleep(0)
 
 
 @contextmanager
-def fake_mdns() -> Iterator[FakeMDNS]:
+def fake_mdns() -> Generator[FakeMDNS]:
     fake = FakeMDNS()
     async_zeroconf = MagicMock(name="AsyncZeroconf")
     async_zeroconf.return_value.zeroconf = fake._zeroconf

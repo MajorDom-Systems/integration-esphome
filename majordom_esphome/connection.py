@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import logging
 from collections.abc import Awaitable, Callable
+from typing import Any
 from uuid import UUID
 
 from aioesphomeapi import (
@@ -33,6 +34,7 @@ RECONNECT_DELAY_MAX = 30.0
 StateCallback = Callable[[UUID, EntityInfo, EntityState], Awaitable[None]]
 AvailabilityCallback = Callable[[UUID, bool, str | None], Awaitable[None]]  # (device id, available, reason if not)
 AddressesCallback = Callable[[UUID, list[str]], Awaitable[None]]
+ClientCallback = Callable[[UUID, APIClient | None], Awaitable[None]]  # (device id, its client if connected, else None)
 
 
 class KeyRefusedError(ConnectionError):
@@ -64,7 +66,8 @@ class ESPhomeDeviceConnection:
         on_state: StateCallback,
         on_availability: AvailabilityCallback | None = None,
         on_addresses: AddressesCallback | None = None,
-    ) -> None:
+        on_client: ClientCallback | None = None,
+    ):
         self.device_id = device_id
         self.addresses = list(addresses)  # hostname and IPs, tried in order; reordered by what worked
         self.port = port
@@ -72,6 +75,7 @@ class ESPhomeDeviceConnection:
         self.on_state_callback = on_state
         self.on_availability_callback = on_availability
         self.on_addresses_callback = on_addresses
+        self.on_client_callback = on_client
 
         self.last_error: Exception | None = None
         self._client: APIClient | None = None
@@ -83,18 +87,19 @@ class ESPhomeDeviceConnection:
         self._failed = asyncio.Event()
         self._disconnected = asyncio.Event()
         self._available: bool | None = None  # what the callback was last told
+        self._reported_client: APIClient | None = None  # what the client callback was last told
 
     @property
     def ready(self) -> bool:
         return self._ready.is_set()
 
-    async def start(self) -> None:
+    async def start(self):
         self._failed.clear()
         self.last_error = None
         self._consumer = asyncio.create_task(self._consume_states())
         self._task = asyncio.create_task(self._run())
 
-    async def stop(self) -> None:
+    async def stop(self):
         for task in (self._task, self._consumer):
             if task is not None:
                 task.cancel()
@@ -104,7 +109,7 @@ class ESPhomeDeviceConnection:
         await self._close_client()
         self._ready.clear()
 
-    async def wait_ready(self, timeout: float = WAIT_READY_TIMEOUT) -> None:
+    async def wait_ready(self, timeout: float = WAIT_READY_TIMEOUT):
         """Wait for the first successful connection; fail as soon as an attempt fails (no endless retrying)."""
         waiters = {asyncio.create_task(self._ready.wait()), asyncio.create_task(self._failed.wait())}
         try:
@@ -118,7 +123,7 @@ class ESPhomeDeviceConnection:
             raise ConnectionError(describe_error(self.last_error)) from self.last_error
         raise TimeoutError("The device did not respond in time")
 
-    async def provision_key(self, key: str, session_psk: str | None) -> None:
+    async def provision_key(self, key: str, session_psk: str | None):
         """Give a keyless node its key over a short-lived session (`session_psk`: the zero PSK, or None for plaintext on
         older firmware). The node stores it and accepts only connections with it from then on."""
         error: Exception = ConnectionError("The device has no address")
@@ -126,7 +131,7 @@ class ESPhomeDeviceConnection:
             try:
                 accepted = await self._set_key_at(address, key, session_psk)
             except Exception as exc:
-                logger.info("Device %s is not reachable at %s: %r", self.device_id, address, exc)
+                logger.info(f"Device {self.device_id} is not reachable at {address}: {exc!r}")
                 error = exc
                 continue
             if not accepted:
@@ -138,7 +143,7 @@ class ESPhomeDeviceConnection:
     async def _set_key_at(self, address: str, key: str, session_psk: str | None) -> bool:
         dropped = asyncio.Event()
 
-        async def on_stop(expected_disconnect: bool) -> None:
+        async def on_stop(expected_disconnect: bool):
             dropped.set()
 
         client = APIClient(address, self.port, None, noise_psk=session_psk)
@@ -158,7 +163,7 @@ class ESPhomeDeviceConnection:
     def get_entities(self) -> dict[int, EntityInfo]:
         return self._entities.copy()
 
-    async def send_command(self, entity_key: int, component_type: str, command_args: dict) -> None:
+    async def send_command(self, entity_key: int, component_type: str, command_args: dict[str, Any]):
         if self._client is None or not self.ready:
             raise ConnectionError("Device not connected")
         method = getattr(self._client, f"{component_type}_command", None)
@@ -169,7 +174,7 @@ class ESPhomeDeviceConnection:
         except APIConnectionError as exc:
             raise ConnectionError("Device not connected") from exc
 
-    async def _run(self) -> None:
+    async def _run(self):
         delay = RECONNECT_DELAY_FIRST
         while True:
             try:
@@ -180,9 +185,7 @@ class ESPhomeDeviceConnection:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                logger.warning(
-                    "Connection to %s (%s, port %s) failed: %r", self.device_id, self.addresses, self.port, exc
-                )
+                logger.warning(f"Connection to {self.device_id} ({self.addresses}, port {self.port}) failed: {exc!r}")
                 self.last_error = exc
                 self._ready.clear()
                 self._failed.set()
@@ -191,7 +194,7 @@ class ESPhomeDeviceConnection:
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, RECONNECT_DELAY_MAX)
 
-    async def _connect(self) -> None:
+    async def _connect(self):
         """Connect through the first address that works; remember what worked for the next connection."""
         self._disconnected.clear()
         failed: list[str] = []
@@ -201,16 +204,17 @@ class ESPhomeDeviceConnection:
                 async with asyncio.timeout(ADDRESS_TIMEOUT):
                     await self._connect_to(address)
             except Exception as exc:
-                logger.info("Device %s is not reachable at %s: %r", self.device_id, address, exc)
+                logger.info(f"Device {self.device_id} is not reachable at {address}: {exc!r}")
                 error = exc
                 failed.append(address)
                 await self._close_client()
                 continue
             await self._remember(address, failed)
+            await self._report_client(self._client)
             return
         raise error
 
-    async def _connect_to(self, address: str) -> None:
+    async def _connect_to(self, address: str):
         client = APIClient(address, self.port, None, noise_psk=self.encryption_key)
         self._client = client
         await client.connect(login=True, on_stop=self._on_stop)
@@ -219,9 +223,9 @@ class ESPhomeDeviceConnection:
         client.subscribe_states(self._state_received)
         self.last_error = None
         self._ready.set()
-        logger.info("Connected to ESPHome device %s at %s:%s", self.device_id, address, self.port)
+        logger.info(f"Connected to ESPHome device {self.device_id} at {address}:{self.port}")
 
-    async def _remember(self, address: str, failed: list[str]) -> None:
+    async def _remember(self, address: str, failed: list[str]):
         """Working address first, addresses that failed this time last."""
         untried = [a for a in self.addresses if a != address and a not in failed]
         remembered = [address, *untried, *failed]
@@ -231,18 +235,18 @@ class ESPhomeDeviceConnection:
                 try:
                     await self.on_addresses_callback(self.device_id, remembered)
                 except Exception:
-                    logger.exception("Error saving the addresses of %s", self.device_id)
+                    logger.exception(f"Error saving the addresses of {self.device_id}")
         await self._report_availability(True, None)
 
-    async def _on_stop(self, expected_disconnect: bool) -> None:
-        logger.info("Device %s disconnected (expected=%s)", self.device_id, expected_disconnect)
+    async def _on_stop(self, expected_disconnect: bool):
+        logger.info(f"Device {self.device_id} disconnected (expected={expected_disconnect})")
         self._ready.clear()
         self._disconnected.set()
 
-    def _state_received(self, state: EntityState) -> None:
+    def _state_received(self, state: EntityState):
         self._states.put_nowait(state)
 
-    async def _consume_states(self) -> None:
+    async def _consume_states(self):
         """Deliver states one at a time, in the order the device sent them."""
         while True:
             state = await self._states.get()
@@ -252,18 +256,33 @@ class ESPhomeDeviceConnection:
             try:
                 await self.on_state_callback(self.device_id, entity, state)
             except Exception:
-                logger.exception("Error handling state of %s on %s", entity.name, self.device_id)
+                logger.exception(f"Error handling state of {entity.name} on {self.device_id}")
 
-    async def _report_availability(self, available: bool, reason: str | None) -> None:
+    async def _report_availability(self, available: bool, reason: str | None):
         if self.on_availability_callback is None or self._available == available:
             return
         self._available = available
         try:
             await self.on_availability_callback(self.device_id, available, reason)
         except Exception:
-            logger.exception("Error reporting availability of %s", self.device_id)
+            logger.exception(f"Error reporting availability of {self.device_id}")
 
-    async def _close_client(self) -> None:
+    async def report_client(self):
+        """Tell the client callback the current client again, as if it had just connected."""
+        self._reported_client = None
+        await self._report_client(self._client)
+
+    async def _report_client(self, client: APIClient | None):
+        if self.on_client_callback is None or self._reported_client is client:
+            return
+        self._reported_client = client
+        try:
+            await self.on_client_callback(self.device_id, client)
+        except Exception:
+            logger.exception(f"Error reporting the client of {self.device_id}")
+
+    async def _close_client(self):
+        await self._report_client(None)
         client, self._client = self._client, None
         if client is not None:
             with contextlib.suppress(Exception):

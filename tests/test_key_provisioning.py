@@ -6,11 +6,14 @@ requires it. The user never types (or sees) a key.
 
 import asyncio
 import base64
+import json
 import logging
 from collections.abc import AsyncIterator, Callable, Coroutine
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 from unittest.mock import patch
+from uuid import UUID
 
 import pytest
 import pytest_asyncio
@@ -21,9 +24,10 @@ from aioesphomeapi import (
     EntityInfo,
     InvalidEncryptionKeyAPIError,
 )
+from majordom_integration_sdk import Platform
 from majordom_integration_sdk.schemas import CredentialsType, ProvidedCredentials
 from majordom_integration_sdk.schemas.device import Discovery
-from majordom_integration_sdk.testing import RecordingControllerOutput
+from majordom_integration_sdk.testing import RecordingControllerOutput, build_test_platform
 
 from majordom_esphome.controller import ESPhomeController
 from majordom_esphome.models import ESPhomeDevice
@@ -35,6 +39,17 @@ pytestmark = pytest.mark.timeout(60)
 
 NEW_KEY = base64.b64encode(bytes(range(32))).decode()  # set in the YAML of a reflashed node
 KEYLESS_ADVERT = Advert(name=KEYLESS.name, mac=KEYLESS.mac, port=KEYLESS.port, keyless=True)
+
+
+@pytest.fixture
+def store() -> dict[UUID, dict[str, Any]]:
+    """The Hub's device records: a test deletes one as the Hub does."""
+    return {}
+
+
+@pytest.fixture
+def platform(store: dict[UUID, dict[str, Any]], tmp_path: Path) -> Platform:
+    return build_test_platform(tmp_path, store=store)
 
 
 @pytest_asyncio.fixture
@@ -54,18 +69,18 @@ async def discover(controller: ESPhomeController, mdns: FakeMDNS, advert: Advert
 @pytest_asyncio.fixture
 async def keyless_discovery(controller: ESPhomeController, mdns: FakeMDNS, keyless_device: VirtualDevice) -> Discovery:
     found = await discover(controller, mdns, KEYLESS_ADVERT)
-    await hub_creates_device(controller.dependencies, found)
+    await hub_creates_device(controller.platform, found)
     return found
 
 
 async def stored(controller: ESPhomeController, device_id: Any) -> ESPhomeDevice:
-    async with controller.dependencies.make_device_repository() as repo:
+    async with controller.platform.device_repository(controller) as repo:
         device = await repo.get(device_id, as_=ESPhomeDevice)
     assert device is not None
     return device
 
 
-def assert_is_a_key(key: str | None) -> None:
+def assert_is_a_key(key: str | None):
     assert key is not None and key != ZERO_NOISE_PSK
     assert len(base64.b64decode(key, validate=True)) == 32
 
@@ -121,7 +136,9 @@ async def test_the_node_keeps_its_key_across_its_restart_and_the_hubs(
 
     await controller.stop()
     output.connected_devices.clear()
-    restarted = ESPhomeController(controller.dependencies)
+    restarted = ESPhomeController(controller.platform)
+    restarted.peripherals = controller.peripherals
+    restarted.output = controller.output
     await restarted.start()
     try:
         await wait_until(lambda: keyless_discovery.id in output.connected_devices, 15, "the Hub to reconnect")
@@ -169,7 +186,7 @@ class FakeNode:
 
 
 class FakeClient:
-    def __init__(self, node: FakeNode, psk: str | None) -> None:
+    def __init__(self, node: FakeNode, psk: str | None):
         self.node, self.psk = node, psk
         self.on_stop: Callable[[bool], Coroutine[Any, Any, None]] | None = None
 
@@ -191,10 +208,10 @@ class FakeClient:
     async def list_entities_services(self) -> tuple[list[EntityInfo], list[Any]]:
         return [], []
 
-    def subscribe_states(self, on_state: Callable[..., None]) -> None:
+    def subscribe_states(self, on_state: Callable[..., None]):
         pass
 
-    async def disconnect(self) -> None:
+    async def disconnect(self):
         pass
 
 
@@ -209,7 +226,7 @@ async def test_older_firmware_is_given_its_key_in_plaintext_newer_over_the_zero_
     controller: ESPhomeController, mdns: FakeMDNS, node: FakeNode
 ):
     newer = await discover(controller, mdns, Advert(keyless=True))
-    await hub_creates_device(controller.dependencies, newer)
+    await hub_creates_device(controller.platform, newer)
     await controller.pair_device(newer, credentials=None)
     await controller.unpair(await stored(controller, newer.id))
     node.key = None
@@ -225,13 +242,13 @@ async def test_a_refused_key_fails_pairing_cleanly(
 ):
     node.accepts_key = False
     found = await discover(controller, mdns, Advert(keyless=True))
-    await hub_creates_device(controller.dependencies, found)
+    await hub_creates_device(controller.platform, found)
 
     with pytest.raises(ConnectionError):
         await controller.pair_device(found, credentials=None)
 
     assert node.key is None
-    await assert_not_paired(controller.dependencies, found.id, kept_key=True)
+    await assert_not_paired(controller.platform, found.id, kept_key=True)
     assert output.connected_devices == []
     assert "key" in (output.updated_discoveries[-1].last_error or "").lower(), "the user must be told why"
     assert found.id in controller.discoveries
@@ -243,14 +260,16 @@ async def test_a_key_set_before_a_failed_reconnect_is_kept_for_the_retry_even_ac
 ):
     node.reachable_with_key = False
     found = await discover(controller, mdns, Advert(keyless=True))
-    await hub_creates_device(controller.dependencies, found)
+    await hub_creates_device(controller.platform, found)
     with pytest.raises(ConnectionError):
         await controller.pair_device(found, credentials=None)
-    await assert_not_paired(controller.dependencies, found.id, kept_key=True)
+    await assert_not_paired(controller.platform, found.id, kept_key=True)
     assert (await stored(controller, found.id)).integration_data.encryption_key == node.key
     assert output.updated_discoveries[-1].last_error
     await controller.stop()
-    restarted = ESPhomeController(controller.dependencies)
+    restarted = ESPhomeController(controller.platform)
+    restarted.peripherals = controller.peripherals
+    restarted.output = controller.output
     await restarted.start()
     try:
         node.reachable_with_key = True
@@ -269,12 +288,88 @@ async def test_a_key_set_before_a_failed_reconnect_is_kept_for_the_retry_even_ac
         await restarted.stop()
 
 
+async def test_a_key_set_before_a_pairing_the_hub_gave_up_on_is_kept_for_the_retry(
+    controller: ESPhomeController, mdns: FakeMDNS, node: FakeNode, store: dict[UUID, dict[str, Any]]
+):
+    """The Hub deletes its device record when a pairing fails, though the node requires the key from then on."""
+    node.reachable_with_key = False
+    found = await discover(controller, mdns, Advert(keyless=True))
+    await hub_creates_device(controller.platform, found)
+    with pytest.raises(ConnectionError):
+        await controller.pair_device(found, credentials=None)
+    del store[found.id]
+    node.reachable_with_key = True
+
+    again = await discover(controller, mdns, Advert(encrypted=True))
+    assert again.expected_credentials_options == [CredentialsType.none, CredentialsType.secret]
+    await hub_creates_device(controller.platform, again)
+    await controller.pair_device(again, credentials=None)
+
+    assert (await stored(controller, found.id)).integration_data.encryption_key == node.key
+    assert node.set_key_sessions == [ZERO_NOISE_PSK], "the node already has the key: it is not set twice"
+
+
+async def test_a_given_key_is_kept_by_the_nodes_mac_for_the_hub_alone(
+    controller: ESPhomeController, mdns: FakeMDNS, node: FakeNode
+):
+    found = await discover(controller, mdns, Advert(keyless=True))
+    await hub_creates_device(controller.platform, found)
+
+    await controller.pair_device(found, credentials=None)
+
+    kept = controller.platform.documents_folder(controller) / "keys.json"
+    assert json.loads(kept.read_text()) == {"983569abf679": node.key}
+    assert kept.stat().st_mode & 0o777 == 0o600
+
+
+async def test_a_given_key_outlasts_a_hard_delete_so_the_node_pairs_again_without_one(
+    controller: ESPhomeController, mdns: FakeMDNS, node: FakeNode, store: dict[UUID, dict[str, Any]]
+):
+    """The Hub unpairs a node, then deletes its record: the node still requires the key, the user never saw it."""
+    found = await discover(controller, mdns, Advert(keyless=True))
+    await hub_creates_device(controller.platform, found)
+    await controller.pair_device(found, credentials=None)
+    given = node.key
+    await controller.unpair(await stored(controller, found.id))
+    del store[found.id]
+
+    again = await discover(controller, mdns, Advert(encrypted=True))
+    assert again.expected_credentials_options == [CredentialsType.none, CredentialsType.secret]
+    await hub_creates_device(controller.platform, again)
+    await controller.pair_device(again, credentials=None)
+
+    assert (await stored(controller, found.id)).integration_data.encryption_key == given
+    assert node.set_key_sessions == [ZERO_NOISE_PSK], "the node already has the key: it is not set twice"
+
+
+async def test_pairing_with_a_key_the_user_typed_forgets_the_given_one(
+    controller: ESPhomeController, mdns: FakeMDNS, node: FakeNode
+):
+    """The node was reflashed with a key of its own: the given one is stale once the typed one is proven, not before."""
+    found = await discover(controller, mdns, Advert(keyless=True))
+    await hub_creates_device(controller.platform, found)
+    await controller.pair_device(found, credentials=None)
+    await controller.unpair(await stored(controller, found.id))
+    node.key = NEW_KEY
+    kept = controller.platform.documents_folder(controller) / "keys.json"
+
+    again = await discover(controller, mdns, Advert(encrypted=True))
+    with pytest.raises(ConnectionError):
+        await controller.pair_device(again, ProvidedCredentials(type=CredentialsType.secret, value=NEW_KEY[::-1]))
+    assert json.loads(kept.read_text()) != {}, "a mistyped key proves nothing"
+    await controller.pair_device(
+        controller.discoveries[again.id], ProvidedCredentials(type=CredentialsType.secret, value=NEW_KEY)
+    )
+
+    assert json.loads(kept.read_text()) == {}
+
+
 async def test_a_retry_before_the_node_announces_its_key_does_not_set_it_again(
     controller: ESPhomeController, mdns: FakeMDNS, node: FakeNode
 ):
     node.reachable_with_key = False
     found = await discover(controller, mdns, Advert(keyless=True))
-    await hub_creates_device(controller.dependencies, found)
+    await hub_creates_device(controller.platform, found)
     with pytest.raises(ConnectionError):
         await controller.pair_device(found, credentials=None)
     node.reachable_with_key = True
@@ -291,7 +386,7 @@ async def test_a_node_reflashed_with_a_key_of_its_own_after_the_hub_kept_one_can
     """Paired with the Hub's key, unpaired (the Hub keeps the device record, and so the key), then reflashed with a key
     in its YAML: the kept key is refused, so the user must be able to enter the new one."""
     found = await discover(controller, mdns, Advert(keyless=True))
-    await hub_creates_device(controller.dependencies, found)
+    await hub_creates_device(controller.platform, found)
     await controller.pair_device(found, credentials=None)
     kept = (await stored(controller, found.id)).integration_data.encryption_key
     await controller.unpair(await stored(controller, found.id))
