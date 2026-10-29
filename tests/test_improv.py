@@ -26,7 +26,7 @@ from improv_ble_client.protocol import (
     WiFiSettingsRes,
 )
 from majordom_integration_sdk import MissingCredentialsError, Platform, WifiCredentials
-from majordom_integration_sdk.capabilities import BLEDiscoveryInfo, GattCharacteristic, GattService
+from majordom_integration_sdk.capabilities import BLE_ROUTER, BLEDiscoveryInfo, GattCharacteristic, GattService
 from majordom_integration_sdk.peripherals import PeripheralChange, Peripherals
 from majordom_integration_sdk.runtime.peripherals.providers.ble.router import BLEService
 from majordom_integration_sdk.schemas import CredentialsType
@@ -224,7 +224,7 @@ async def test_the_discovery_id_follows_the_name_not_the_ble_address(
 ):
     await node.advertise(radio)
     first = set(controller.discoveries)
-    await controller.ble_did_remove_device(controller.peripherals.instance("ble"), node.info())
+    await controller.ble_did_remove_device(controller.peripherals.instance(BLE_ROUTER), node.info())
     node.address = "AA:BB:CC:DD:EE:02"  # a random (resolvable private) address changes
 
     await node.advertise(radio)
@@ -262,7 +262,7 @@ async def test_a_node_that_stops_advertising_is_lost(
 ):
     await node.advertise(radio)
 
-    await controller.ble_did_remove_device(controller.peripherals.instance("ble"), node.info(named=False))
+    await controller.ble_did_remove_device(controller.peripherals.instance(BLE_ROUTER), node.info(named=False))
 
     assert controller.discoveries == {}
     assert output.lost_discoveries == [output.received_discoveries[0].id]
@@ -512,7 +512,7 @@ async def test_a_node_out_of_ble_range_fails_with_a_clear_reason(
 async def test_bluetooth_held_by_another_integration_fails_with_a_clear_reason(
     controller: ESPhomeController, ble_discovery: Discovery, node: FakeImprovNode, output: RecordingControllerOutput
 ):
-    async with controller.peripherals.instance("ble").exclusive(node.address, owner="matter"):
+    async with controller.peripherals.instance(BLE_ROUTER).exclusive(node.address, owner="matter"):
         with pytest.raises(improv.SetupError):
             await controller.pair_device(ble_discovery, credentials=None)
 
@@ -528,7 +528,7 @@ async def test_a_node_heard_best_through_another_esphome_node_is_set_up_through_
     keyless_device: VirtualDevice,
 ):
     proxy = FakeBLESource("esphome:a0b1c2d3e4f5", connection=node)
-    router: BLEService = controller.peripherals.instance("ble")
+    router: BLEService = controller.peripherals.instance(BLE_ROUTER)
     await router.add_source(proxy)
     radio.connection = None  # the Hub's adapter barely hears it: only the ESPHome node can connect
     await node.advertise(radio, rssi=-95)
