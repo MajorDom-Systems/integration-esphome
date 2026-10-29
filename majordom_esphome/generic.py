@@ -77,6 +77,8 @@ GATES: dict[tuple[str, str], Callable[[Any], bool]] = {
     ("fan", "preset_mode"): lambda e: bool(e.supported_preset_modes),
     ("cover", "tilt"): lambda e: e.supports_tilt,
     ("cover", "stop"): lambda e: e.supports_stop,
+    ("cover", "stop_tilt"): lambda e: e.supports_stop_tilt,
+    ("cover", "toggle"): lambda e: e.supports_toggle,
     # cold/warm white lights are driven through the colour temperature, their two channels are an implementation detail
     ("light", "color_temperature"): lambda e: bool(
         _caps(e) & (LightColorCapability.COLOR_TEMPERATURE | LightColorCapability.COLD_WARM_WHITE)

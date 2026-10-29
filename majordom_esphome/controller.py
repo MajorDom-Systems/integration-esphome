@@ -132,7 +132,8 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
         self._run = object()
         await self._load_paired_devices()  # first: DNS-SD tells the nodes in its cache at once, the paired ones too
 
-        zeroconf = self.peripherals.instance(ZEROCONF)
+        if (zeroconf := self.peripherals.instance(ZEROCONF)) is None:
+            raise RuntimeError("zeroconf isn't bound")
         self._zeroconf_cancel = zeroconf.register(self, services={"_esphomelib._tcp.local."})
         self._listen_for_improv()
 
