@@ -147,6 +147,7 @@ class ESPhomeDeviceConnection:
             dropped.set()
 
         client = APIClient(address, self.port, None, noise_psk=session_psk)
+        accepted = False
         try:
             async with asyncio.timeout(ADDRESS_TIMEOUT):
                 await client.connect(login=True, on_stop=on_stop)
@@ -157,8 +158,11 @@ class ESPhomeDeviceConnection:
                         await dropped.wait()
             return accepted
         finally:
-            with contextlib.suppress(Exception):
-                await client.disconnect()
+            if accepted:  # the node drops (or is about to drop) this session: a disconnect request would fail
+                client.force_disconnect()
+            else:
+                with contextlib.suppress(Exception):
+                    await client.disconnect()
 
     def get_entities(self) -> dict[int, EntityInfo]:
         return self._entities.copy()
