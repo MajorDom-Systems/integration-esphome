@@ -19,7 +19,7 @@ from majordom_esphome.models import ESPhomeDevice
 from tests.helpers import hub_creates_device
 from tests.virtual import catalogue
 from tests.virtual.mdns import Advert, FakeMDNS, fake_mdns
-from tests.virtual.runner import ENCRYPTED, PLAIN, SKETCHES, VirtualDevice, build
+from tests.virtual.runner import ENCRYPTED, PLAIN, SKETCHES, VirtualDevice, build, release_ports
 
 
 def pytest_configure(config: pytest.Config):
@@ -46,6 +46,13 @@ def pytest_collection_finish(session: pytest.Session):
                 build(sketch)
     if any(item.get_closest_marker("catalogue") for item in session.items):
         _BUILD_ERRORS.update(catalogue.build_all())
+
+
+@pytest.fixture(autouse=True)
+def _virtual_device_ports() -> Iterator[None]:
+    """Set up first, torn down last: the ports stay this run's until every device of the test has stopped."""
+    yield
+    release_ports()
 
 
 @pytest.fixture

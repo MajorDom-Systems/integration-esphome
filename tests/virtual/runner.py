@@ -6,6 +6,7 @@ async, typed helper that can be killed and restarted mid-test. It never touches 
 
 import asyncio
 import contextlib
+import fcntl
 import os
 import shutil
 import signal
@@ -50,6 +51,30 @@ def build(sketch: Sketch):
     subprocess.run(["esphome", "compile", str(sketch.directory / sketch.yaml)], check=True)
 
 
+# The API port is compiled into each binary (ESPHome host builds read no port override at runtime), so two test runs
+# on one machine (worktrees, a dev and an agent) would bind the same ports and talk to each other's nodes. A run takes
+# this machine-wide lock when a test starts its first virtual device and keeps it until the test ends (`release_ports`),
+# also across a device's stop/start: parallel runs take turns per test instead of colliding. One lock for all ports, so
+# two runs can never deadlock on a test with two devices.
+_LOCK_PATH = Path(tempfile.gettempdir()) / "majordom-esphome-virtual-devices.lock"
+_lock_fd: int | None = None
+
+
+async def _acquire_ports():
+    global _lock_fd
+    if _lock_fd is None:
+        fd = os.open(_LOCK_PATH, os.O_RDWR | os.O_CREAT, 0o666)
+        await asyncio.to_thread(fcntl.flock, fd, fcntl.LOCK_EX)
+        _lock_fd = fd
+
+
+def release_ports():
+    global _lock_fd
+    if _lock_fd is not None:
+        os.close(_lock_fd)  # closing drops the flock
+        _lock_fd = None
+
+
 class VirtualDevice:
     def __init__(self, sketch: Sketch = PLAIN):
         self.sketch = sketch
@@ -79,6 +104,7 @@ class VirtualDevice:
             raise FileNotFoundError(
                 f"{self.sketch.binary} is not built: run `poetry run python -m tests.virtual.build`"
             )
+        await _acquire_ports()
         line_buffered = shutil.which("stdbuf") or shutil.which("gstdbuf")  # piped stdout is block-buffered otherwise
         cmd = [line_buffered, "-oL", str(self.sketch.binary)] if line_buffered else [str(self.sketch.binary)]
         # the node's flash (a provisioned key) lives in its own workdir: kept across restarts, never across tests
