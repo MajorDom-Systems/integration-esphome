@@ -180,6 +180,7 @@ class FakeNode:
     reachable_with_key: bool = True
     key: str | None = None
     set_key_sessions: list[str | None] = field(default_factory=list)  # the PSK of every session a key was sent over
+    failed_disconnect_requests: int = 0  # sent over a session the node already dropped: aioesphomeapi logs an ERROR
 
     def client(self, address: str, port: int, password: str | None, noise_psk: str | None = None) -> "FakeClient":
         return FakeClient(self, noise_psk)
@@ -189,6 +190,7 @@ class FakeClient:
     def __init__(self, node: FakeNode, psk: str | None):
         self.node, self.psk = node, psk
         self.on_stop: Callable[[bool], Coroutine[Any, Any, None]] | None = None
+        self.dropped = False
 
     async def connect(self, login: bool = False, on_stop: Callable[[bool], Coroutine[Any, Any, None]] | None = None):
         self.on_stop = on_stop
@@ -201,6 +203,7 @@ class FakeClient:
         self.node.set_key_sessions.append(self.psk)
         if self.node.accepts_key:
             self.node.key = key.decode()
+            self.dropped = True
             if self.on_stop is not None:  # like a real node: it drops every session once it uses the new key
                 asyncio.get_running_loop().call_later(0.1, asyncio.ensure_future, self.on_stop(False))
         return self.node.accepts_key
@@ -212,6 +215,10 @@ class FakeClient:
         pass
 
     async def disconnect(self):
+        if self.dropped:
+            self.node.failed_disconnect_requests += 1
+
+    def force_disconnect(self):
         pass
 
 
@@ -235,6 +242,18 @@ async def test_older_firmware_is_given_its_key_in_plaintext_newer_over_the_zero_
     await controller.pair_device(older, credentials=None)
 
     assert node.set_key_sessions == [ZERO_NOISE_PSK, None]
+
+
+async def test_the_session_the_node_drops_after_taking_its_key_is_closed_without_a_disconnect_request(
+    controller: ESPhomeController, mdns: FakeMDNS, node: FakeNode
+):
+    found = await discover(controller, mdns, Advert(keyless=True))
+    await hub_creates_device(controller.platform, found)
+
+    await controller.pair_device(found, credentials=None)
+
+    assert node.key is not None
+    assert node.failed_disconnect_requests == 0
 
 
 async def test_a_refused_key_fails_pairing_cleanly(
