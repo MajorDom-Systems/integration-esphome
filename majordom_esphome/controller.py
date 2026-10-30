@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import functools
 import logging
 import secrets
 from collections.abc import Callable, Coroutine
@@ -41,7 +42,7 @@ from majordom_integration_sdk.schemas.device import Discovery
 from majordom_integration_sdk.schemas.parameter import ParameterVisibility
 from pydantic import BaseModel, Field
 
-from . import improv, mapper
+from . import improv, mapper, thread_provisioning
 from .bluetooth import ble_source_of
 from .connection import ESPhomeDeviceConnection, describe_error
 from .models import (
@@ -54,7 +55,7 @@ from .models import (
 
 logger = logging.getLogger(__name__)
 
-NODE_APPEAR_TIMEOUT = 60.0  # seconds for a node to announce itself over mDNS once it has joined Wi-Fi
+NODE_APPEAR_TIMEOUT = 60.0  # seconds for a node to announce itself over mDNS once it has joined Wi-Fi or Thread
 
 
 @dataclass
@@ -68,10 +69,11 @@ class _DiscoveryData:
 
 @dataclass
 class _ImprovNode:
-    """An unprovisioned node, waiting for Wi-Fi over BLE."""
+    """An unprovisioned node, waiting for its network over BLE: Wi-Fi (Improv) or Thread (`thread_provisioning`)."""
 
     name: str  # its node name, as far as BLE carries it
     address: str
+    thread: bool = False
 
 
 class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESPhomeController.Settings"]):
@@ -323,7 +325,11 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
     def _listen_for_improv(self):
         """Hear unprovisioned nodes through the router bound now, if there is one."""
         router = self._router
-        self._ble_cancel = router.register(self, {UUID(improv.SERVICE_UUID)}) if router else None
+        self._ble_cancel = (
+            router.register(self, {UUID(improv.SERVICE_UUID), UUID(thread_provisioning.SERVICE_UUID)})
+            if router
+            else None
+        )
 
     async def _lose_improv_node(self, address: str):
         name = self._ble_names.pop(address, None)
@@ -333,15 +339,17 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
             await self.output.controller_did_lose_discovery(self, device_id)
 
     async def _on_improv_advert(self, info: BLEDiscoveryInfo):
-        """Offer a node waiting for Wi-Fi. Improv carries no identity but the node name, so the discovery is keyed by
-        it (the BLE address may be random, and differs from the MAC the node is known by once on the network)."""
+        """Offer a node waiting for Wi-Fi or Thread. Neither service carries an identity but the node name, so the
+        discovery is keyed by it (the BLE address may be random, and differs from the MAC the node is known by once on
+        the network)."""
         try:
             name = info.advertisement.local_name or self._ble_names.get(info.device.address)
-            if name is None or not improv.waits_for_wifi(info.advertisement):
+            thread = thread_provisioning.waits_for_thread(info.advertisement)
+            if name is None or not (thread or improv.waits_for_wifi(info.advertisement)):
                 return
             self._ble_names[info.device.address] = name
             device_id = self.device_uuid(f"improv:{name}")
-            self._improv_nodes[device_id] = _ImprovNode(name, info.device.address)
+            self._improv_nodes[device_id] = _ImprovNode(name, info.device.address, thread)
             if device_id in self._discoveries:  # adverts repeat all the time: keep the discovery (and its last error)
                 return
             discovery = Discovery(
@@ -352,7 +360,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
                 device_name=name,
                 device_category=None,
                 device_icon=None,
-                expected_credentials_options=[CredentialsType.none],  # the Hub gives it its own Wi-Fi
+                expected_credentials_options=[CredentialsType.none],  # the Hub gives it its own network
             )
             self._discoveries[device_id] = discovery
             await self.output.controller_did_receive_discovery(self, discovery)
@@ -577,19 +585,20 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
     # Private: pairing
 
     async def _pair_over_ble(self, discovery: Discovery, run: object | None) -> UUID:
-        """Give the node the Hub's Wi-Fi, wait for it on the network, then pair it like any other node. The Hub's device
-        takes the node's own identity (from its MAC), which is what it is found by from then on; it is returned."""
+        """Give the node the Hub's Wi-Fi or Thread network, wait for it on the network, then pair it like any other
+        node. The Hub's device takes the node's own identity (from its MAC), which is what it is found by from then on;
+        it is returned."""
         logger.info(f"Setting up ESPHome device {discovery.device_name} over BLE")
         node = self._improv_nodes[discovery.id]
         try:
-            wifi = self._wifi_credentials()
+            network = self._thread_dataset() if node.thread else self._wifi_credentials()
             async with self.platform.device_repository(self) as repo:
                 hub_device = await repo.get(discovery.id, as_=ESPhomeDevice)
             if hub_device is None:
                 raise LookupError("The Hub has not created a device for this discovery")
             if (router := self._router) is None:
                 raise LookupError("The Hub has no Bluetooth to set the device up with")
-            setup = self._spawn(self._join_wifi(router, node, wifi, discovery.id))  # stop() ends it at once
+            setup = self._spawn(self._join_network(router, node, network, discovery.id))  # stop() ends it at once
             try:
                 on_network = await setup
             except asyncio.CancelledError:
@@ -615,23 +624,23 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
         await self.output.controller_did_lose_discovery(self, on_network.id)
         return on_network.id
 
-    async def _join_wifi(
-        self, router: BLERouter, node: _ImprovNode, wifi: WifiCredentials, discovery_id: UUID
+    async def _join_network(
+        self, router: BLERouter, node: _ImprovNode, network: WifiCredentials | bytes, discovery_id: UUID
     ) -> Discovery:
-        """Give the node the Hub's Wi-Fi over Improv, then wait for it on the network: its mDNS discovery."""
+        """Give the node the Hub's Wi-Fi over Improv, or its Thread dataset, then wait for it on the network: its mDNS
+        discovery."""
         joined = self._joining[node.name] = asyncio.get_running_loop().create_future()
+        on_authorization_required = functools.partial(self._report_error, discovery_id, improv.PRESS_BUTTON)
+        name = "the Hub's Thread network" if isinstance(network, bytes) else network.ssid
         try:
-            await improv.provision(
-                router,
-                node.address,
-                wifi.ssid,
-                wifi.password,
-                on_authorization_required=lambda: self._report_error(discovery_id, improv.PRESS_BUTTON),
-            )
+            if isinstance(network, bytes):
+                await thread_provisioning.provision(router, node.address, network, on_authorization_required)
+            else:
+                await improv.provision(router, node.address, network.ssid, network.password, on_authorization_required)
             async with asyncio.timeout(NODE_APPEAR_TIMEOUT):
                 return await joined
         except TimeoutError:
-            raise TimeoutError(f"The device joined {wifi.ssid} but did not show up on the network") from None
+            raise TimeoutError(f"The device joined {name} but did not show up on the network") from None
         finally:
             self._joining.pop(node.name, None)
 
@@ -639,6 +648,12 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
         if (wifi := self.platform.wifi) is None:
             raise MissingCredentialsError(MissingCredentialsError.WIFI)
         return wifi
+
+    def _thread_dataset(self) -> bytes:
+        """The Hub's active operational dataset; it holds the network key, so it is never logged."""
+        if not (dataset := self.platform.thread_dataset):
+            raise MissingCredentialsError(MissingCredentialsError.THREAD)
+        return bytes.fromhex(dataset)
 
     async def _report_error(self, discovery_id: UUID, reason: str):
         """Show the user why pairing a discovery failed (or what it waits for), while it is still offered."""
