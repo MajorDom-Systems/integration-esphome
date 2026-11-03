@@ -38,6 +38,7 @@ from majordom_esphome import improv
 from majordom_esphome.controller import ESPhomeController
 from majordom_esphome.models import ESPhomeDevice
 from tests.helpers import (
+    FakeEncryptedLink,
     assert_not_paired,
     hub_pairs,
     leaked_tasks,
@@ -60,10 +61,11 @@ HOME = WifiCredentials("Home", "correct horse battery")
 HANDLES = {uuid: 0x11 + i for i, uuid in enumerate(IMPROV_CHARACTERISTICS)}
 
 
-class FakeImprovNode:
+class FakeImprovNode(FakeEncryptedLink):
     """An unprovisioned ESPHome node's Improv GATT service, as the `BLEConnection` a Bluetooth source hands out."""
 
     def __init__(self, name: str = KEYLESS.name, address: str = "AA:BB:CC:DD:EE:01"):
+        super().__init__()
         self.name, self.address = name, address
         self.state = State.AUTHORIZED
         self.password = HOME.password  # of the network it can join
@@ -115,6 +117,7 @@ class FakeImprovNode:
 
     async def write(self, handle: int, data: bytes, is_response_needed: bool = True):
         assert handle == HANDLES[CHARACTERISTIC_UUID_RPC_COMMAND]
+        self.check_encrypted(data)
         command = WiFiSettingsCmd.from_bytes(data)
         asyncio.get_running_loop().create_task(
             self._join(WifiCredentials(command.ssid.decode(), command.password.decode()))
@@ -164,7 +167,7 @@ def node(monkeypatch: pytest.MonkeyPatch) -> FakeImprovNode:
 @pytest.fixture
 def radio(node: FakeImprovNode) -> FakeBLESource:
     """The Hub's own Bluetooth adapter."""
-    return FakeBLESource("hci0", connection=node)
+    return FakeBLESource("hci0", connection=node, is_pairable=True)
 
 
 @pytest.fixture
@@ -535,14 +538,14 @@ async def test_a_node_heard_best_through_another_esphome_node_is_set_up_through_
     mdns: FakeMDNS,
     keyless_device: VirtualDevice,
 ):
-    proxy = FakeBLESource("esphome:a0b1c2d3e4f5", connection=node)
+    proxy = FakeBLESource("esphome:a0b1c2d3e4f5", connection=node, is_pairable=True)
     router = router_of(controller)
     await router.add_source(proxy)
     radio.connection = None  # the Hub's adapter barely hears it: only the ESPHome node can connect
     await node.advertise(radio, rssi=-95)
     await node.advertise(proxy, rssi=-50)
     (discovery,) = controller.discoveries.values()
-    user_picks(discovery)
+    await hub_creates_device(controller.platform, discovery)
     joins_as_keyless_device(node, mdns)
 
     assert await hub_pairs(controller, discovery, credentials=None) == controller.device_uuid(
@@ -668,3 +671,58 @@ async def test_a_setup_whose_request_went_away_lets_go_of_the_node(
 )
 def test_a_node_is_recognised_on_the_network_by_the_name_it_advertised(ble_name: str, node_name: str, same: bool):
     assert improv.is_node(ble_name, node_name) == same
+
+
+# Link security: the Wi-Fi password crosses only an encrypted link
+
+
+async def test_the_wifi_password_crosses_only_an_encrypted_link(
+    controller: ESPhomeController,
+    ble_discovery: Discovery,
+    node: FakeImprovNode,
+    mdns: FakeMDNS,
+    keyless_device: VirtualDevice,
+):
+    joins_as_keyless_device(node, mdns)
+
+    await controller.pair_device(ble_discovery, credentials=None)
+
+    assert node.received == [HOME] and node.unencrypted_writes == []
+    assert node.unpaired, "the bond served only the setup"
+
+
+async def test_a_node_heard_best_through_a_proxy_that_cannot_pair_is_set_up_through_a_radio_that_can(
+    controller: ESPhomeController,
+    node: FakeImprovNode,
+    radio: FakeBLESource,
+    mdns: FakeMDNS,
+    keyless_device: VirtualDevice,
+):
+    proxy = FakeBLESource("esphome:a0b1c2d3e4f5", connection=node)  # firmware without pairing
+    await router_of(controller).add_source(proxy)
+    await node.advertise(radio, rssi=-80)
+    await node.advertise(proxy, rssi=-50)
+    (discovery,) = controller.discoveries.values()
+    await hub_creates_device(controller.platform, discovery)
+    joins_as_keyless_device(node, mdns)
+
+    await controller.pair_device(discovery, credentials=None)
+
+    assert node.received == [HOME] and node.unencrypted_writes == []
+    assert (proxy.connected, radio.connected) == ([], [node.address])
+
+
+async def test_no_radio_that_can_pair_fails_with_a_clear_reason_and_sends_nothing(
+    controller: ESPhomeController,
+    ble_discovery: Discovery,
+    node: FakeImprovNode,
+    radio: FakeBLESource,
+    output: RecordingControllerOutput,
+):
+    radio.is_pairable = False
+
+    with pytest.raises(improv.EncryptionError):
+        await controller.pair_device(ble_discovery, credentials=None)
+
+    assert node.received == [] and node.unencrypted_writes == []
+    assert "encrypt" in (await last_error(output, ble_discovery)).lower()

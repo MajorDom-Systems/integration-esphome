@@ -8,7 +8,7 @@ service; it is given the Hub's Wi-Fi over BLE, joins the LAN and then announces 
 
 import asyncio
 import contextlib
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 
 from aioesphomeapi import APIConnectionError
 from bleak.exc import BleakError
@@ -24,9 +24,24 @@ from improv_ble_client.protocol import (
     WiFiSettingsRes,
     parse_result,
 )
-from majordom_integration_sdk.capabilities import BLEBusyError, BLEConnection, BLERouter
+from majordom_integration_sdk.capabilities import (
+    BLEBusyError,
+    BLEConnection,
+    BLEPairingError,
+    BLERouter,
+    LESecureConnections,
+    SecureChannel,
+)
 
-__all__ = ["SERVICE_UUID", "SetupError", "is_node", "provision", "waits_for_wifi"]
+__all__ = [
+    "SERVICE_UUID",
+    "EncryptionError",
+    "SetupError",
+    "is_node",
+    "provision",
+    "secured_connection",
+    "waits_for_wifi",
+]
 
 AUTHORIZATION_TIMEOUT = 60.0  # for the user to press the node's button
 PROVISION_TIMEOUT = 90.0  # from giving the node the Wi-Fi to its answer
@@ -38,10 +53,47 @@ NOTIFYING = (CHARACTERISTIC_UUID_STATE, CHARACTERISTIC_UUID_ERROR, CHARACTERISTI
 PRESS_BUTTON = "Press the button on the device to let the Hub set it up"
 NO_ANSWER = "The device did not answer over Bluetooth: move it closer to the Hub"
 BUSY = "The Hub's Bluetooth is busy with another device: try again in a minute"
+NOT_ENCRYPTED = (
+    "The Hub could not set up an encrypted Bluetooth link to the device, so it sent it nothing: move it closer to the "
+    "Hub and try again"
+)
 
 
 class SetupError(Exception):
     """The node could not be set up over BLE; the message is meant for the user."""
+
+
+class EncryptionError(SetupError):
+    """The link could not be secured, so no credentials were sent (fail closed)."""
+
+
+@contextlib.asynccontextmanager
+async def secured_connection(
+    ble: BLERouter, address: str, owner: str, lease_timeout: float, channel: SecureChannel | None = None
+) -> AsyncGenerator[BLEConnection]:
+    """The node's connection, secured by ``channel`` (LE Secure Connections by default) before anything is written,
+    through the radio that hears it best (of those that can pair, if the channel pairs), held for the whole exchange.
+    Bluetooth failures become `SetupError`s."""
+    channel = channel or LESecureConnections()
+    try:
+        async with ble.exclusive(
+            address, owner=owner, timeout=lease_timeout, is_pairing_needed=channel.is_pairing_needed
+        ) as lease:
+            connection = await lease.connect()
+            try:
+                async with channel.secure(connection) as secured:
+                    yield secured
+            finally:
+                with contextlib.suppress(Exception):
+                    await connection.disconnect()
+    except BLEPairingError as exc:
+        raise EncryptionError(NOT_ENCRYPTED) from exc
+    except BLEBusyError as exc:
+        raise SetupError(BUSY) from exc
+    # BleakError and APIConnectionError: what a local adapter's and an ESPHome node's connections raise, until the SDK
+    # normalises them
+    except (ConnectionError, TimeoutError, LookupError, ValueError, ImprovError, BleakError, APIConnectionError) as exc:
+        raise SetupError(NO_ANSWER) from exc
 
 
 def is_node(ble_name: str, node_name: str) -> bool:
@@ -57,23 +109,12 @@ async def provision(
     ssid: str,
     password: str,
     on_authorization_required: Callable[[], Awaitable[None]],
+    channel: SecureChannel | None = None,
 ):
     """Give the node the Wi-Fi network; returns once it has joined it (ESPHome reports a failure after its
-    `wifi_timeout`). The radio that hears the node best is held for the whole exchange. Raises `SetupError`."""
-    try:
-        async with ble.exclusive(address, owner=OWNER, timeout=LEASE_TIMEOUT) as lease:
-            connection = await lease.connect()
-            try:
-                await _provision(connection, ssid, password, on_authorization_required)
-            finally:
-                with contextlib.suppress(Exception):
-                    await connection.disconnect()
-    except BLEBusyError as exc:
-        raise SetupError(BUSY) from exc
-    # BleakError and APIConnectionError: what a local adapter's and an ESPHome node's connections raise, until the SDK
-    # normalises them
-    except (ConnectionError, TimeoutError, LookupError, ValueError, ImprovError, BleakError, APIConnectionError) as exc:
-        raise SetupError(NO_ANSWER) from exc
+    `wifi_timeout`). Raises `SetupError`, `EncryptionError` when the link could not be secured."""
+    async with secured_connection(ble, address, OWNER, LEASE_TIMEOUT, channel) as connection:
+        await _provision(connection, ssid, password, on_authorization_required)
 
 
 async def _provision(

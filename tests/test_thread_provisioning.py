@@ -34,7 +34,7 @@ from majordom_esphome.thread_provisioning import (
     Error,
     State,
 )
-from tests.helpers import assert_not_paired, hub_pairs, leaked_tasks, user_picks, wait_until
+from tests.helpers import FakeEncryptedLink, assert_not_paired, hub_pairs, leaked_tasks, user_picks, wait_until
 from tests.virtual.mdns import Advert, FakeMDNS
 from tests.virtual.runner import KEYLESS, VirtualDevice
 
@@ -53,10 +53,11 @@ DATASET = (
 HANDLES = {uuid: 0x21 + i for i, uuid in enumerate((STATE_UUID, ERROR_UUID, RPC_UUID, RESULT_UUID))}
 
 
-class FakeThreadNode:
+class FakeThreadNode(FakeEncryptedLink):
     """An unprovisioned ESPHome node's `thread_provisioning` GATT service, as the `BLEConnection` a source hands out."""
 
     def __init__(self, name: str = KEYLESS.name, address: str = "AA:BB:CC:DD:EE:03"):
+        super().__init__()
         self.name, self.address = name, address
         self.state = State.AUTHORIZED
         self.mtu = 247
@@ -86,6 +87,7 @@ class FakeThreadNode:
 
     async def write(self, handle: int, data: bytes, is_response_needed: bool = True):
         assert handle == HANDLES[RPC_UUID] and is_response_needed
+        self.check_encrypted(data)
         assert len(data) <= self.mtu - 3, "a write must fit in one ATT packet"
         self.writes.append(data)
         self._incoming += data
@@ -137,7 +139,7 @@ def node(monkeypatch: pytest.MonkeyPatch) -> FakeThreadNode:
 
 @pytest.fixture
 def radio(node: FakeThreadNode) -> FakeBLESource:
-    return FakeBLESource("hci0", connection=node)
+    return FakeBLESource("hci0", connection=node, is_pairable=True)
 
 
 @pytest.fixture
@@ -318,3 +320,69 @@ async def test_the_network_key_is_never_logged(
 
     assert NETWORK_KEY not in caplog.text.lower()
     assert DATASET not in caplog.text.lower()
+
+
+# Link security: the dataset holds the network key
+
+
+async def test_the_dataset_crosses_only_an_encrypted_link(
+    controller: ESPhomeController,
+    ble_discovery: Discovery,
+    node: FakeThreadNode,
+    mdns: FakeMDNS,
+    keyless_device: VirtualDevice,
+):
+    attaches_as_keyless_device(node, mdns)
+
+    await controller.pair_device(ble_discovery, credentials=None)
+
+    assert node.received == [DATASET] and node.unencrypted_writes == []
+    assert node.unpaired, "the bond served only the setup"
+
+
+async def test_a_radio_that_cannot_pair_is_refused_before_the_node_is_touched(
+    controller: ESPhomeController,
+    ble_discovery: Discovery,
+    node: FakeThreadNode,
+    radio: FakeBLESource,
+    output: RecordingControllerOutput,
+):
+    radio.is_pairable = False  # e.g. an ESPHome proxy without pairing
+
+    with pytest.raises(improv.EncryptionError):
+        await controller.pair_device(ble_discovery, credentials=None)
+
+    assert "encrypt" in (await last_error(output, ble_discovery)).lower()
+    assert radio.connected == [] and node.writes == [] and node.unencrypted_writes == []
+    await assert_not_paired(controller.platform, ble_discovery.id)
+
+
+async def test_a_node_that_refuses_pairing_is_sent_nothing(
+    controller: ESPhomeController, ble_discovery: Discovery, node: FakeThreadNode, output: RecordingControllerOutput
+):
+    node.accepts_pairing = False
+
+    with pytest.raises(improv.EncryptionError):
+        await controller.pair_device(ble_discovery, credentials=None)
+
+    assert node.writes == [] and node.unencrypted_writes == []
+    assert "encrypt" in (await last_error(output, ble_discovery)).lower()
+
+
+async def test_an_unencrypted_link_is_used_only_when_allowed_for_legacy_firmware(
+    controller: ESPhomeController,
+    ble_discovery: Discovery,
+    node: FakeThreadNode,
+    radio: FakeBLESource,
+    mdns: FakeMDNS,
+    keyless_device: VirtualDevice,
+    caplog: pytest.LogCaptureFixture,
+):
+    radio.is_pairable, node.requires_encryption = False, False
+    controller.settings = ESPhomeController.Settings(is_unencrypted_provisioning_allowed=True)
+    attaches_as_keyless_device(node, mdns)
+
+    await controller.pair_device(ble_discovery, credentials=None)
+
+    assert node.received == [DATASET] and node.unencrypted_writes
+    assert "unencrypted" in caplog.text

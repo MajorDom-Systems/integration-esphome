@@ -7,7 +7,7 @@ import base64
 import functools
 import logging
 import secrets
-from collections.abc import Callable, Coroutine
+from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass, replace
 from typing import Any
 from uuid import UUID
@@ -28,6 +28,9 @@ from majordom_integration_sdk.capabilities import (
     ZEROCONF,
     BLEDiscoveryInfo,
     BLERouter,
+    LESecureConnections,
+    SecureChannel,
+    Unsecured,
     Zeroconf,
     ZeroconfDiscoveryInfo,
 )
@@ -108,6 +111,13 @@ class ESPhomeController(
             title="Bluetooth proxies",
             description="Reach Bluetooth devices through ESPHome devices with bluetooth_proxy. A device serves one hub "
             "at a time: turn this off only if another hub needs its Bluetooth proxy.",
+        )
+        is_unencrypted_provisioning_allowed: bool = Field(
+            False,
+            title="Unencrypted Bluetooth setup",
+            description="Give a device its Wi-Fi password or Thread network key over an unencrypted Bluetooth link "
+            "when an encrypted one can't be set up (old firmware, or no Bluetooth radio that can pair). Anyone nearby "
+            "could read them: turn this on only for a moment, for such a device.",
         )
 
     def __init__(self, platform: Platform, *, settings: ESPhomeController.Settings | None = None):
@@ -707,15 +717,31 @@ class ESPhomeController(
         name = "the Hub's Thread network" if isinstance(network, bytes) else network.ssid
         try:
             if isinstance(network, bytes):
-                await thread_provisioning.provision(router, node.address, network, on_authorization_required)
+                provision = functools.partial(
+                    thread_provisioning.provision, router, node.address, network, on_authorization_required
+                )
             else:
-                await improv.provision(router, node.address, network.ssid, network.password, on_authorization_required)
+                provision = functools.partial(
+                    improv.provision, router, node.address, network.ssid, network.password, on_authorization_required
+                )
+            await self._provision_securely(provision)
             async with asyncio.timeout(NODE_APPEAR_TIMEOUT):
                 return await joined
         except TimeoutError:
             raise TimeoutError(f"The device joined {name} but did not show up on the network") from None
         finally:
             self._joining.pop(node.name, None)
+
+    async def _provision_securely(self, provision: Callable[[SecureChannel], Awaitable[None]]):
+        """Credentials cross only an encrypted link; an unencrypted one only if the user allowed it, for firmware or
+        radios that can't pair."""
+        try:
+            await provision(LESecureConnections())
+        except improv.EncryptionError:
+            if not self.settings.is_unencrypted_provisioning_allowed:
+                raise
+            logger.warning("No encrypted Bluetooth link to the device: sending its credentials unencrypted, as allowed")
+            await provision(Unsecured())
 
     def _wifi_credentials(self) -> WifiCredentials:
         if (wifi := self.platform.wifi) is None:
