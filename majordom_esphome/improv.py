@@ -66,7 +66,10 @@ RPC_SERVICE = RpcService(
     CHARACTERISTIC_UUID_CAPABILITIES,
 )
 
-PRESS_BUTTON = "Press the button on the device to let the Hub set it up"
+# asked for only without a setup code: a node with one takes its code instead (a Thread advert can't say if it has one)
+PRESS_BUTTON = (
+    "Press the button on the device, or pair it with its setup code if one is printed on it, to let the Hub set it up"
+)
 NO_ANSWER = "The device did not answer over Bluetooth: move it closer to the Hub"
 BUSY = "The Hub's Bluetooth is busy with another device: try again in a minute"
 NOT_ENCRYPTED = (
