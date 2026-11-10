@@ -19,7 +19,7 @@ from majordom_integration_sdk.testing import RecordingControllerOutput
 
 from majordom_esphome.controller import ESPhomeController
 from majordom_esphome.models import ESPhomeDevice
-from tests.helpers import ROOM, assert_not_paired, leaked_tasks, param, wait_for_value
+from tests.helpers import ROOM, assert_not_paired, changes, draft_of, hub_pairs, leaked_tasks, param, wait_for_value
 from tests.virtual.mdns import Advert, FakeMDNS
 from tests.virtual.runner import VirtualDevice
 
@@ -123,7 +123,7 @@ async def test_device_has_a_one_tap_main_parameter(paired: ESPhomeDevice):
 async def test_pairing_keeps_what_the_hub_already_knows_about_the_device(
     controller: ESPhomeController, discovery: Discovery
 ):
-    await controller.pair_device(discovery, credentials=None)
+    await hub_pairs(controller, discovery, credentials=None)
 
     async with controller.platform.device_repository(controller) as repo:
         stored = await repo.get(discovery.id, as_=ESPhomeDevice)
@@ -131,35 +131,40 @@ async def test_pairing_keeps_what_the_hub_already_knows_about_the_device(
     assert (stored.room_id, stored.name) == (ROOM, "Kitchen relay")  # the user's choices, saved by the Hub
 
 
-async def test_pairing_needs_the_device_the_hub_creates(controller: ESPhomeController, mdns: FakeMDNS, device):
+async def test_pairing_fills_the_draft_and_saves_nothing_itself(
+    controller: ESPhomeController, mdns: FakeMDNS, device, output: RecordingControllerOutput
+):
     await mdns.announce(Advert(port=device.port))
     (discovery,) = controller.discoveries.values()
 
-    with pytest.raises(LookupError):
-        await controller.pair_device(discovery, credentials=None)
+    filled = await controller.pair_device(discovery, draft_of(discovery), None)
 
+    assert (filled.id, filled.name, filled.available) == (discovery.id, "Kitchen relay", True)
+    assert filled.parameters and filled.integration_data.addresses
     async with controller.platform.device_repository(controller) as repo:
-        assert await repo.get(discovery.id) is None  # the integration must not invent the device
+        assert await repo.get(discovery.id) is None  # the Hub saves it
+    await asyncio.sleep(0.1)
+    assert output.connected_devices == [] and changes(output) == [], "nothing is reported before the Hub saved it"
 
 
 async def test_pairing_reports_the_device_and_forgets_the_discovery(
     controller: ESPhomeController, discovery: Discovery, output: RecordingControllerOutput
 ):
-    await controller.pair_device(discovery, credentials=None)
+    await hub_pairs(controller, discovery, credentials=None)
 
     assert output.connected_devices == [discovery.id]
     assert controller.discoveries == {}
 
 
 async def test_pairing_accepts_explicit_no_credentials(controller: ESPhomeController, discovery: Discovery):
-    await controller.pair_device(discovery, ProvidedCredentials(type=CredentialsType.none))
+    await hub_pairs(controller, discovery, ProvidedCredentials(type=CredentialsType.none))
 
 
 async def test_pairing_rejects_credentials_the_discovery_did_not_ask_for(
     controller: ESPhomeController, discovery: Discovery
 ):
     with pytest.raises(ValueError):
-        await controller.pair_device(discovery, ProvidedCredentials(type=CredentialsType.secret, value="a-key"))
+        await hub_pairs(controller, discovery, ProvidedCredentials(type=CredentialsType.secret, value="a-key"))
 
     assert discovery.id in controller.discoveries
 
@@ -171,7 +176,7 @@ async def test_device_can_be_paired_again_after_unpairing(
     await mdns.announce(Advert(name="test_node", port=device.port, addresses=["127.0.0.1", "::1"]))
     (discovery,) = controller.discoveries.values()
 
-    await controller.pair_device(discovery, credentials=None)
+    await hub_pairs(controller, discovery, credentials=None)
 
     async with controller.platform.device_repository(controller) as repo:
         again = await repo.get(discovery.id, as_=ESPhomeDevice)
@@ -187,7 +192,7 @@ async def test_pairing_an_unreachable_device_fails_fast_and_cleanly(
 
     async with asyncio.timeout(25):
         with pytest.raises((ConnectionError, TimeoutError)):
-            await controller.pair_device(discovery, credentials=None)
+            await hub_pairs(controller, discovery, credentials=None)
 
     await assert_not_paired(controller.platform, discovery.id)
     assert output.connected_devices == []
@@ -202,10 +207,10 @@ async def test_pairing_is_retryable_after_the_device_comes_back(
 ):
     await device.stop()
     with pytest.raises((ConnectionError, TimeoutError)):
-        await controller.pair_device(discovery, credentials=None)
+        await hub_pairs(controller, discovery, credentials=None)
     await device.start()
 
-    await controller.pair_device(output.updated_discoveries[-1], credentials=None)
+    await hub_pairs(controller, output.updated_discoveries[-1], credentials=None)
 
     async with controller.platform.device_repository(controller) as repo:
         stored = await repo.get(discovery.id, as_=ESPhomeDevice)

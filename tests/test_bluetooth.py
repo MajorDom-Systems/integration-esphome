@@ -4,7 +4,7 @@ import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 from typing import Any, cast
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 from uuid import UUID
 
 import pytest
@@ -30,7 +30,7 @@ from majordom_esphome.bluetooth import ESPhomeBLEConnection, ESPhomeBLESource, b
 from majordom_esphome.connection import WAIT_READY_TIMEOUT, ESPhomeDeviceConnection
 from majordom_esphome.controller import ESPhomeController
 from majordom_esphome.models import ESPhomeDevice
-from tests.helpers import assert_not_paired, hub_creates_device, leaked_tasks, wait_until
+from tests.helpers import assert_not_paired, draft_of, hub_pairs, leaked_tasks, user_picks, wait_until
 from tests.virtual.mdns import Advert, FakeMDNS
 
 PROXY = (
@@ -576,8 +576,8 @@ async def announce(controller: ESPhomeController, mdns: FakeMDNS, node: str) -> 
 
 async def pair(controller: ESPhomeController, mdns: FakeMDNS, node: str) -> ESPhomeDevice:
     discovery = await announce(controller, mdns, node)
-    await hub_creates_device(controller.platform, discovery, name=node)
-    await controller.pair_device(discovery, None)
+    user_picks(discovery, name=node)
+    await hub_pairs(controller, discovery, None)
     async with controller.platform.device_repository(controller) as repo:
         device = await repo.get(discovery.id, as_=ESPhomeDevice)
     assert device is not None
@@ -717,14 +717,12 @@ async def test_a_failed_pairing_leaves_no_radio_lent(
     monkeypatch: pytest.MonkeyPatch,
 ):
     discovery = await announce(esphome, mdns, "kitchen")
-    await hub_creates_device(esphome.platform, discovery, name="kitchen")
-    # the pairing fails after connecting, once the node is lent
-    monkeypatch.setattr(
-        output, "controller_did_connect_device", AsyncMock(side_effect=RuntimeError("the Hub went away"))
-    )
+    user_picks(discovery, name="kitchen")
+    # the pairing fails after connecting
+    monkeypatch.setattr(esphome, "_refuse_if_stopped", Mock(side_effect=RuntimeError("the Hub went away")))
 
     with pytest.raises(RuntimeError):
-        await esphome.pair_device(discovery, None)
+        await hub_pairs(esphome, discovery, None)
 
     assert sources(ble) == []
     assert nodes.connection_of("kitchen").on_advertisements is None
@@ -739,13 +737,13 @@ async def test_a_pairing_that_failed_once_connected_can_be_tried_again(
     monkeypatch: pytest.MonkeyPatch,
 ):
     discovery = await announce(esphome, mdns, "kitchen")
-    await hub_creates_device(esphome.platform, discovery, name="kitchen")
+    user_picks(discovery, name="kitchen")
     with monkeypatch.context() as hub:
-        hub.setattr(output, "controller_did_connect_device", AsyncMock(side_effect=RuntimeError("the Hub went away")))
+        hub.setattr(esphome, "_refuse_if_stopped", Mock(side_effect=RuntimeError("the Hub went away")))
         with pytest.raises(RuntimeError):
-            await esphome.pair_device(discovery, None)
+            await hub_pairs(esphome, discovery, None)
 
-    await esphome.pair_device(esphome.discoveries[discovery.id], None)
+    await hub_pairs(esphome, esphome.discoveries[discovery.id], None)
 
     assert output.connected_devices == [discovery.id]
     assert [client.disconnected for client in nodes.clients] == [True, False]
@@ -797,8 +795,8 @@ async def start_pairing(
 ) -> tuple[Discovery, asyncio.Task[UUID | None]]:
     """The user pairs the node; returns once the pairing waits for it."""
     discovery = await announce(controller, mdns, node)
-    await hub_creates_device(controller.platform, discovery, name=node)
-    pairing = asyncio.create_task(controller.pair_device(discovery, None))
+    user_picks(discovery, name=node)
+    pairing = asyncio.create_task(hub_pairs(controller, discovery, None))
     await wait_until(lambda: nodes.clients and nodes.clients[-1].on_stop, message="the node to answer the connect")
     return discovery, pairing
 
@@ -842,28 +840,16 @@ async def test_a_pairing_across_a_restart_is_refused_and_lends_nothing(
     await assert_not_paired(esphome.platform, discovery.id)
 
 
-async def test_a_stop_while_the_device_is_saved_refuses_the_pairing(
-    runtime: Runtime,
-    esphome: ESPhomeController,
-    mdns: FakeMDNS,
-    nodes: Nodes,
-    output: RecordingControllerOutput,
-    monkeypatch: pytest.MonkeyPatch,
+async def test_a_stop_before_the_hub_saved_the_device_lets_go_of_the_node(
+    runtime: Runtime, esphome: ESPhomeController, mdns: FakeMDNS, nodes: Nodes, output: RecordingControllerOutput
 ):
     discovery = await announce(esphome, mdns, "kitchen")
-    await hub_creates_device(esphome.platform, discovery, name="kitchen")
-    save = DeviceRepositoryMemory.save
 
-    async def save_then_stop(self: DeviceRepositoryMemory, device: Any, previous_id: UUID | None = None):
-        await save(self, device, previous_id)
-        if isinstance(device, ESPhomeDevice) and device.parameters is not None and device.available:
-            await runtime.disable(esphome)  # the pairing's own save: the device is complete
+    await esphome.pair_device(discovery, draft_of(discovery, name="kitchen"), None)
+    await runtime.disable(esphome)
 
-    monkeypatch.setattr(DeviceRepositoryMemory, "save", save_then_stop)
-
-    with pytest.raises(ConnectionError, match="stopped"):
-        await esphome.pair_device(discovery, None)
-    assert esphome._connections == {} and nodes.connection_of("kitchen").disconnected
+    assert esphome._connections == {} and esphome._just_paired == {}
+    assert nodes.connection_of("kitchen").disconnected
     assert output.connected_devices == [] and leaked_tasks() == []
 
 
@@ -906,8 +892,8 @@ async def test_a_node_lends_its_radio_only_once_it_is_paired(
 
     monkeypatch.setattr(ESPhomeDeviceConnection, "wait_ready", wait_ready_then_hold)
     discovery = await announce(esphome, mdns, "kitchen")
-    await hub_creates_device(esphome.platform, discovery, name="kitchen")
-    pairing = asyncio.create_task(esphome.pair_device(discovery, None))
+    user_picks(discovery, name="kitchen")
+    pairing = asyncio.create_task(hub_pairs(esphome, discovery, None))
     await wait_until(lambda: nodes.clients and nodes.clients[-1].on_stop, message="the node to answer the connect")
     await asyncio.sleep(0.1)
 
@@ -968,13 +954,13 @@ async def test_a_stopped_controller_offers_nothing_to_pair(
     runtime: Runtime, esphome: ESPhomeController, mdns: FakeMDNS, nodes: Nodes
 ):
     discovery = await announce(esphome, mdns, "kitchen")
-    await hub_creates_device(esphome.platform, discovery, name="kitchen")
+    user_picks(discovery, name="kitchen")
 
     await runtime.disable(esphome)
 
     assert esphome.discoveries == {}
     with pytest.raises(ValueError, match="no longer discovered"):
-        await esphome.pair_device(discovery, None)
+        await hub_pairs(esphome, discovery, None)
     assert esphome._connections == {} and nodes.clients == []
     assert esphome.discoveries == {}, "not even with the reason it failed"
 

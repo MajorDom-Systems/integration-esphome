@@ -16,7 +16,7 @@ from majordom_integration_sdk.schemas.parameter import ParameterUnit, ParameterV
 
 from majordom_esphome.controller import ESPhomeController
 from majordom_esphome.models import ESPhomeDevice
-from tests.helpers import assert_values_match_parameters, hub_creates_device, param, wait_for_value
+from tests.helpers import assert_values_match_parameters, hub_pairs, param, user_picks, wait_for_value
 from tests.virtual.mdns import Advert, FakeMDNS
 from tests.virtual.runner import EXTRAS, VirtualDevice
 
@@ -35,8 +35,8 @@ async def extras_device() -> AsyncIterator[VirtualDevice]:
 async def extras(controller: ESPhomeController, mdns: FakeMDNS, extras_device: VirtualDevice) -> ESPhomeDevice:
     await mdns.announce(Advert(name=EXTRAS.name, mac=EXTRAS.mac, port=EXTRAS.port))
     (discovery,) = controller.discoveries.values()
-    await hub_creates_device(controller.platform, discovery)
-    await controller.pair_device(discovery, credentials=None)
+    user_picks(discovery)
+    await hub_pairs(controller, discovery, credentials=None)
     async with controller.platform.device_repository(controller) as repo:
         stored = await repo.get(discovery.id, as_=ESPhomeDevice)
     assert stored is not None

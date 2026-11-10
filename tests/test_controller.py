@@ -9,7 +9,7 @@ from uuid import UUID
 
 import pytest
 from aioesphomeapi import CameraInfo, LightInfo, SwitchInfo
-from majordom_integration_sdk import Endpoint, PeripheralChange, Peripherals, Platform
+from majordom_integration_sdk import DeviceIdTakenError, Endpoint, PeripheralChange, Peripherals, Platform
 from majordom_integration_sdk.schemas.command import DeviceCommand
 from majordom_integration_sdk.schemas.device import Discovery
 from majordom_integration_sdk.schemas.parameter import ParameterDataType, ParameterRole
@@ -17,8 +17,8 @@ from majordom_integration_sdk.testing import RecordingControllerOutput
 
 import majordom_esphome
 from majordom_esphome.controller import ESPhomeController
-from majordom_esphome.models import ESPhomeDevice
-from tests.helpers import assert_not_paired, hub_creates_device, param
+from majordom_esphome.models import ESPhomeDevice, ESPhomeDeviceIntegrationData
+from tests.helpers import ROOM, assert_not_paired, draft_of, hub_pairs, param, user_picks
 from tests.virtual.mdns import Advert, FakeMDNS, settle
 
 SWITCH_KEY = 7  # deliberately different from every other number in the tests
@@ -28,7 +28,7 @@ SWITCH_KEY = 7  # deliberately different from every other number in the tests
 async def mock_discovery(controller: ESPhomeController, mdns: FakeMDNS) -> Discovery:
     await mdns.announce(Advert())
     (found,) = controller.discoveries.values()
-    await hub_creates_device(controller.platform, found)
+    user_picks(found)
     return found
 
 
@@ -39,7 +39,7 @@ async def mock_paired(controller: ESPhomeController, mock_discovery: Discovery, 
         SWITCH_KEY: make_entity(SwitchInfo, SWITCH_KEY, "Relay"),
         11: make_entity(LightInfo, 11, "Lamp", supported_color_modes=[3]),
     }
-    await controller.pair_device(mock_discovery, credentials=None)
+    await hub_pairs(controller, mock_discovery, credentials=None)
     async with controller.platform.device_repository(controller) as repo:
         stored = await repo.get(mock_discovery.id, as_=ESPhomeDevice)
     assert stored is not None
@@ -70,7 +70,7 @@ async def test_pairing_skips_entities_it_cannot_map(
         2: make_entity(SwitchInfo, 2, "Relay"),
     }
 
-    await controller.pair_device(mock_discovery, credentials=None)
+    await hub_pairs(controller, mock_discovery, credentials=None)
 
     async with controller.platform.device_repository(controller) as repo:
         stored = await repo.get(mock_discovery.id, as_=ESPhomeDevice)
@@ -88,7 +88,7 @@ async def test_failed_pairing_is_cleaned_up_and_reported(
     connection.wait_ready.side_effect = TimeoutError("no answer")
 
     with pytest.raises(TimeoutError):
-        await controller.pair_device(mock_discovery, credentials=None)
+        await hub_pairs(controller, mock_discovery, credentials=None)
 
     connection.stop.assert_awaited_once()
     assert mock_discovery.id in controller.discoveries
@@ -134,7 +134,7 @@ async def test_command_on_read_only_parameter_is_rejected(
 
     _, connection = mock_connection
     connection.get_entities.return_value = {3: make_entity(SensorInfo, 3, "Temperature")}
-    await controller.pair_device(mock_discovery, credentials=None)
+    await hub_pairs(controller, mock_discovery, credentials=None)
     async with controller.platform.device_repository(controller) as repo:
         stored = await repo.get(mock_discovery.id, as_=ESPhomeDevice)
     assert stored is not None
@@ -156,8 +156,7 @@ async def test_unpair_closes_the_connection(
     await controller.unpair(mock_paired)
 
     connection.stop.assert_awaited_once()
-    with pytest.raises(ConnectionError):
-        await controller.fetch(mock_paired)
+    assert controller._connections == {}
 
 
 async def test_identify_keeps_the_connection(
@@ -171,8 +170,68 @@ async def test_identify_keeps_the_connection(
     await controller.fetch(mock_paired)
 
 
+async def test_pairing_refuses_an_id_another_record_holds_before_connecting(
+    controller: ESPhomeController, mock_discovery: Discovery, mock_connection: Any
+):
+    MockConn, _ = mock_connection
+    async with controller.platform.device_repository(controller) as repo:
+        await repo.save(
+            ESPhomeDevice(
+                id=mock_discovery.id,
+                name="Old relay",
+                room_id=ROOM,
+                transport="tcp",
+                integration=controller.key,
+                manufacturer=None,
+            )
+        )
+
+    with pytest.raises(DeviceIdTakenError) as taken:
+        await controller.pair_device(
+            mock_discovery, draft_of(mock_discovery).model_copy(update={"id": UUID(int=7)}), None
+        )
+
+    assert (taken.value.device_id, taken.value.name) == (mock_discovery.id, "Old relay")
+    MockConn.assert_not_called()
+
+
+async def test_pairing_onto_the_picked_record_keeps_only_what_is_this_nodes(
+    controller: ESPhomeController, mock_discovery: Discovery, mock_connection: Any
+):
+    kept = ESPhomeDeviceIntegrationData(encryption_key="its-key", settings={"lamp": {"transition_length": 2.0}})
+    same = draft_of(mock_discovery).model_copy(update={"integration_data": kept})
+    other = same.model_copy(update={"id": UUID(int=7)})  # a record of another node: its data is stale
+
+    assert (await controller.pair_device(mock_discovery, same, None)).integration_data.settings == kept.settings
+    filled = await controller.pair_device(mock_discovery, other, None)
+
+    assert filled.id == mock_discovery.id
+    assert (filled.integration_data.settings, filled.integration_data.encryption_key) == ({}, None)
+
+
+async def test_fetch_connects_again_only_once_the_connection_is_gone(
+    controller: ESPhomeController, mock_paired: ESPhomeDevice, mock_connection: Any
+):
+    MockConn, connection = mock_connection
+    connection.running = True
+    await controller.fetch(mock_paired)
+    connection.start.assert_awaited_once()
+
+    connection.running = False
+    await controller.fetch(mock_paired)
+
+    assert connection.start.await_count == 2
+    MockConn.assert_called_once()  # the same connection: never a second subscription
+
+
+async def test_unpair_rolls_back_a_draft_that_got_nowhere(controller: ESPhomeController, mock_discovery: Discovery):
+    await controller.unpair(draft_of(mock_discovery))
+
+    assert controller._connections == {} and controller._just_paired == {}
+
+
 async def test_fetch_of_unknown_device_raises(controller: ESPhomeController, mock_paired: ESPhomeDevice):
-    stranger = mock_paired.model_copy(update={"id": UUID(int=1)})
+    stranger = mock_paired.model_copy(update={"id": UUID(int=1), "integration_data": ESPhomeDeviceIntegrationData()})
 
     with pytest.raises(ConnectionError):
         await controller.fetch(stranger)

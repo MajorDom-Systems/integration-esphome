@@ -9,7 +9,7 @@ from majordom_integration_sdk.testing import RecordingControllerOutput
 
 from majordom_esphome.controller import ESPhomeController
 from majordom_esphome.models import ESPhomeDevice
-from tests.helpers import assert_not_paired, hub_creates_device, leaked_tasks, param, wait_for_value, wait_until
+from tests.helpers import assert_not_paired, hub_pairs, leaked_tasks, param, user_picks, wait_for_value, wait_until
 from tests.virtual.mdns import Advert, FakeMDNS
 from tests.virtual.runner import ENCRYPTION_KEY as KEY
 from tests.virtual.runner import VirtualDevice
@@ -23,7 +23,7 @@ async def encrypted_discovery(
 ) -> Discovery:
     await mdns.announce(Advert(name="test_node_enc", port=encrypted_device.port, encrypted=True))
     (found,) = controller.discoveries.values()
-    await hub_creates_device(controller.platform, found)
+    user_picks(found)
     return found
 
 
@@ -40,7 +40,7 @@ async def test_pairing_without_the_key_is_refused(
     controller: ESPhomeController, encrypted_discovery: Discovery, credentials: ProvidedCredentials | None
 ):
     with pytest.raises(ValueError):
-        await controller.pair_device(encrypted_discovery, credentials)
+        await hub_pairs(controller, encrypted_discovery, credentials)
 
     await assert_not_paired(controller.platform, encrypted_discovery.id)
 
@@ -49,7 +49,7 @@ async def test_pairing_with_a_code_instead_of_the_key_is_refused(
     controller: ESPhomeController, encrypted_discovery: Discovery
 ):
     with pytest.raises(ValueError):
-        await controller.pair_device(encrypted_discovery, ProvidedCredentials(type=CredentialsType.code, value=KEY))
+        await hub_pairs(controller, encrypted_discovery, ProvidedCredentials(type=CredentialsType.code, value=KEY))
 
 
 @pytest.mark.timeout(60)
@@ -57,7 +57,7 @@ async def test_pairing_with_a_wrong_key_fails_cleanly(
     controller: ESPhomeController, encrypted_discovery: Discovery, output: RecordingControllerOutput
 ):
     with pytest.raises((ConnectionError, TimeoutError, ValueError)):
-        await controller.pair_device(encrypted_discovery, secret(WRONG_KEY))
+        await hub_pairs(controller, encrypted_discovery, secret(WRONG_KEY))
 
     await assert_not_paired(controller.platform, encrypted_discovery.id)
     assert output.connected_devices == []
@@ -70,7 +70,7 @@ async def test_pairing_with_a_wrong_key_fails_cleanly(
 async def test_pairing_with_the_key_works_like_a_plain_device(
     controller: ESPhomeController, encrypted_discovery: Discovery, output: RecordingControllerOutput
 ):
-    await controller.pair_device(encrypted_discovery, secret(KEY))
+    await hub_pairs(controller, encrypted_discovery, secret(KEY))
 
     async with controller.platform.device_repository(controller) as repo:
         stored = await repo.get(encrypted_discovery.id, as_=ESPhomeDevice)
@@ -84,7 +84,7 @@ async def test_pairing_with_the_key_works_like_a_plain_device(
 async def test_encrypted_device_reconnects_after_hub_restart(
     controller: ESPhomeController, encrypted_discovery: Discovery, output: RecordingControllerOutput
 ):
-    await controller.pair_device(encrypted_discovery, secret(KEY))
+    await hub_pairs(controller, encrypted_discovery, secret(KEY))
     await controller.stop()
     output.connected_devices.clear()
     restarted = ESPhomeController(controller.platform)
@@ -105,9 +105,9 @@ async def test_the_key_is_never_logged(
 ):
     caplog.set_level(logging.DEBUG)
 
-    await controller.pair_device(encrypted_discovery, secret(KEY))
+    await hub_pairs(controller, encrypted_discovery, secret(KEY))
     with pytest.raises((ConnectionError, TimeoutError, ValueError)):
-        await controller.pair_device(encrypted_discovery, secret(WRONG_KEY))
+        await hub_pairs(controller, encrypted_discovery, secret(WRONG_KEY))
 
     assert KEY not in caplog.text
     assert WRONG_KEY not in caplog.text

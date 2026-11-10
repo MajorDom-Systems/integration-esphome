@@ -8,7 +8,7 @@ from majordom_integration_sdk.testing import RecordingControllerOutput
 
 from majordom_esphome.controller import ESPhomeController
 from majordom_esphome.models import ESPhomeDevice
-from tests.helpers import hub_creates_device, param, wait_for_value, wait_until
+from tests.helpers import hub_pairs, param, user_picks, wait_for_value, wait_until
 from tests.virtual.mdns import Advert, FakeMDNS
 from tests.virtual.runner import VirtualDevice
 
@@ -16,8 +16,8 @@ from tests.virtual.runner import VirtualDevice
 async def pair(controller: ESPhomeController, mdns: FakeMDNS, advert: Advert) -> ESPhomeDevice:
     await mdns.announce(advert)
     (discovery,) = controller.discoveries.values()
-    await hub_creates_device(controller.platform, discovery)
-    await controller.pair_device(discovery, credentials=None)
+    user_picks(discovery)
+    await hub_pairs(controller, discovery, credentials=None)
     return await stored(controller, discovery.id)
 
 
@@ -51,8 +51,8 @@ async def test_pairing_uses_the_latest_announcement(
     await mdns.announce(Advert(port=device.port, server=None, addresses=["127.0.0.1"]))  # DHCP moved it
 
     (discovery,) = controller.discoveries.values()
-    await hub_creates_device(controller.platform, discovery)
-    await controller.pair_device(discovery, credentials=None)
+    user_picks(discovery)
+    await hub_pairs(controller, discovery, credentials=None)
 
     assert (await stored(controller, discovery.id)).integration_data.addresses == ["127.0.0.1"]
 

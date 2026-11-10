@@ -34,7 +34,7 @@ from majordom_esphome.thread_provisioning import (
     Error,
     State,
 )
-from tests.helpers import assert_not_paired, hub_creates_device, leaked_tasks, wait_until
+from tests.helpers import assert_not_paired, hub_pairs, leaked_tasks, user_picks, wait_until
 from tests.virtual.mdns import Advert, FakeMDNS
 from tests.virtual.runner import KEYLESS, VirtualDevice
 
@@ -162,7 +162,7 @@ def peripherals(peripherals: Peripherals, router: BLEService) -> Peripherals:
 async def ble_discovery(controller: ESPhomeController, node: FakeThreadNode, radio: FakeBLESource) -> Discovery:
     await node.advertise(radio)
     (found,) = controller.discoveries.values()
-    await hub_creates_device(controller.platform, found)
+    user_picks(found)
     return found
 
 
@@ -209,7 +209,7 @@ async def test_pairing_gives_the_node_the_hubs_thread_network_then_pairs_it_with
 ):
     attaches_as_keyless_device(node, mdns)
 
-    device_id = await controller.pair_device(ble_discovery, credentials=None)
+    device_id = await hub_pairs(controller, ble_discovery, credentials=None)
 
     assert node.received == [DATASET]
     assert device_id is not None
@@ -228,7 +228,7 @@ async def test_the_dataset_is_written_in_chunks_that_fit_the_connection(
     node.mtu = 23  # the BLE minimum: 20 bytes per write
 
     with pytest.raises(TimeoutError):  # attached, but never shows up in this test
-        await controller.pair_device(ble_discovery, credentials=None)
+        await hub_pairs(controller, ble_discovery, credentials=None)
 
     assert node.received == [DATASET]
     assert len(node.writes) > 1
@@ -243,7 +243,7 @@ async def test_a_hub_without_a_thread_network_asks_for_one_before_touching_the_n
     controller.platform = replace(controller.platform, thread_dataset=None)
 
     with pytest.raises(MissingCredentialsError) as raised:
-        await controller.pair_device(ble_discovery, credentials=None)
+        await hub_pairs(controller, ble_discovery, credentials=None)
 
     assert raised.value.type == MissingCredentialsError.THREAD
     assert radio.connected == [] and node.received == []
@@ -253,7 +253,7 @@ async def test_a_node_waiting_for_its_button_tells_the_user_then_carries_on(
     controller: ESPhomeController, ble_discovery: Discovery, node: FakeThreadNode
 ):
     node.state = State.AWAITING_AUTHORIZATION
-    pairing = asyncio.create_task(controller.pair_device(ble_discovery, credentials=None))
+    pairing = asyncio.create_task(hub_pairs(controller, ble_discovery, credentials=None))
     await wait_until(
         lambda: "button" in (controller.discoveries[ble_discovery.id].last_error or ""), 5, "the instruction"
     )
@@ -285,7 +285,7 @@ async def test_a_node_error_fails_pairing_with_a_clear_reason(
     node.fails_with = error
 
     with pytest.raises(improv.SetupError):
-        await controller.pair_device(ble_discovery, credentials=None)
+        await hub_pairs(controller, ble_discovery, credentials=None)
 
     assert told in (await last_error(output, ble_discovery)).lower()
     await assert_not_paired(controller.platform, ble_discovery.id)
@@ -297,7 +297,7 @@ async def test_a_node_that_never_shows_up_on_the_network_times_out_with_a_clear_
     controller: ESPhomeController, ble_discovery: Discovery, node: FakeThreadNode, output: RecordingControllerOutput
 ):
     with pytest.raises(TimeoutError):
-        await controller.pair_device(ble_discovery, credentials=None)
+        await hub_pairs(controller, ble_discovery, credentials=None)
 
     assert "joined the hub's thread network but did not show up" in (await last_error(output, ble_discovery)).lower()
     await assert_not_paired(controller.platform, ble_discovery.id)
@@ -314,7 +314,7 @@ async def test_the_network_key_is_never_logged(
     caplog.set_level(logging.DEBUG)
     attaches_as_keyless_device(node, mdns)
 
-    await controller.pair_device(ble_discovery, credentials=None)
+    await hub_pairs(controller, ble_discovery, credentials=None)
 
     assert NETWORK_KEY not in caplog.text.lower()
     assert DATASET not in caplog.text.lower()

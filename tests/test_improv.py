@@ -25,7 +25,7 @@ from improv_ble_client.protocol import (
     WiFiSettingsCmd,
     WiFiSettingsRes,
 )
-from majordom_integration_sdk import MissingCredentialsError, Platform, WifiCredentials
+from majordom_integration_sdk import DeviceIdTakenError, MissingCredentialsError, Platform, WifiCredentials
 from majordom_integration_sdk.capabilities import BLE_ROUTER, BLEDiscoveryInfo, GattCharacteristic, GattService
 from majordom_integration_sdk.peripherals import PeripheralChange, Peripherals
 from majordom_integration_sdk.runtime.peripherals.providers.ble.router import BLEService
@@ -39,8 +39,9 @@ from majordom_esphome.controller import ESPhomeController
 from majordom_esphome.models import ESPhomeDevice
 from tests.helpers import (
     assert_not_paired,
-    hub_creates_device,
+    hub_pairs,
     leaked_tasks,
+    user_picks,
     wait_until,
 )
 from tests.virtual.mdns import Advert, FakeMDNS
@@ -188,7 +189,7 @@ def peripherals(peripherals: Peripherals, router: BLEService) -> Peripherals:
 async def ble_discovery(controller: ESPhomeController, node: FakeImprovNode, radio: FakeBLESource) -> Discovery:
     await node.advertise(radio)
     (found,) = controller.discoveries.values()
-    await hub_creates_device(controller.platform, found)
+    user_picks(found)
     return found
 
 
@@ -341,7 +342,7 @@ async def test_pairing_gives_the_node_the_hubs_wifi_then_pairs_it_with_a_key_of_
 ):
     joins_as_keyless_device(node, mdns)
 
-    device_id = await controller.pair_device(ble_discovery, credentials=None)
+    device_id = await hub_pairs(controller, ble_discovery, credentials=None)
 
     assert node.received == [HOME]
     assert device_id is not None
@@ -369,20 +370,21 @@ async def test_a_paired_node_set_up_again_fails_fast_as_already_paired(
 ):
     """Its Wi-Fi was reset: it waits for Wi-Fi again, joins, and turns out to be a device the Hub has."""
     joins_as_keyless_device(node, mdns)
-    await controller.pair_device(ble_discovery, credentials=None)
+    await hub_pairs(controller, ble_discovery, credentials=None)
     await node.advertise(radio)  # provisioned
     node.state = State.AUTHORIZED  # its Wi-Fi reset: it left the network, and waits for Wi-Fi again
     await mdns.goodbye(Advert(name=KEYLESS.name))
     await node.advertise(radio)
     (again,) = controller.discoveries.values()
-    await hub_creates_device(controller.platform, again, name="Another relay")
+    user_picks(again, name="Another relay")
 
-    with pytest.raises(ValueError, match="already paired as Kitchen relay"):
+    with pytest.raises(DeviceIdTakenError) as taken:
         async with asyncio.timeout(controller_module.NODE_APPEAR_TIMEOUT / 2):
-            await controller.pair_device(again, credentials=None)
+            await hub_pairs(controller, again, credentials=None)
 
-    assert "already paired" in await last_error(output, again)
-    await assert_not_paired(controller.platform, again.id)
+    assert (taken.value.name, taken.value.is_paired) == ("Kitchen relay", True)
+    assert "Kitchen relay" in await last_error(output, again)
+    await assert_not_paired(controller.platform, again.id, kept_key=True)  # the key the first pairing gave
 
 
 async def test_a_node_waiting_for_its_button_tells_the_user_then_carries_on(
@@ -392,7 +394,7 @@ async def test_a_node_waiting_for_its_button_tells_the_user_then_carries_on(
     output: RecordingControllerOutput,
 ):
     node.state = State.AUTHORIZATION_REQUIRED
-    pairing = asyncio.create_task(controller.pair_device(ble_discovery, credentials=None))
+    pairing = asyncio.create_task(hub_pairs(controller, ble_discovery, credentials=None))
     await wait_until(
         lambda: "button" in (controller.discoveries[ble_discovery.id].last_error or ""), 5, "the instruction"
     )
@@ -420,7 +422,7 @@ async def test_a_node_being_set_up_stays_offered_though_no_radio_hears_it(
     router: BLEService,
     output: RecordingControllerOutput,
 ):
-    pairing = asyncio.create_task(controller.pair_device(ble_discovery, credentials=None))
+    pairing = asyncio.create_task(hub_pairs(controller, ble_discovery, credentials=None))
 
     await unheard_once_given_wifi(router, node)
 
@@ -437,7 +439,7 @@ async def test_a_failed_setup_loses_a_node_no_radio_hears_any_more(
     output: RecordingControllerOutput,
 ):
     """Its removal came while it was set up: none comes again."""
-    pairing = asyncio.create_task(controller.pair_device(ble_discovery, credentials=None))
+    pairing = asyncio.create_task(hub_pairs(controller, ble_discovery, credentials=None))
     await unheard_once_given_wifi(router, node)
 
     with pytest.raises(TimeoutError):
@@ -452,7 +454,7 @@ async def test_a_button_never_pressed_fails_with_the_instruction(
     node.state = State.AUTHORIZATION_REQUIRED
 
     with pytest.raises(improv.SetupError):
-        await controller.pair_device(ble_discovery, credentials=None)
+        await hub_pairs(controller, ble_discovery, credentials=None)
 
     assert node.received == []
     assert "press the button" in (await last_error(output, ble_discovery)).lower()
@@ -479,7 +481,7 @@ async def test_an_improv_error_fails_pairing_with_a_clear_reason(
     node.fails_with = error
 
     with pytest.raises(improv.SetupError):
-        await controller.pair_device(ble_discovery, credentials=None)
+        await hub_pairs(controller, ble_discovery, credentials=None)
 
     assert told in (await last_error(output, ble_discovery)).lower()
     await assert_not_paired(controller.platform, ble_discovery.id)
@@ -497,7 +499,7 @@ async def test_a_wrong_wifi_password_is_reported_and_never_logged(
     node.password = "another password"
 
     with pytest.raises(improv.SetupError):
-        await controller.pair_device(ble_discovery, credentials=None)
+        await hub_pairs(controller, ble_discovery, credentials=None)
 
     assert "wi-fi network home" in (await last_error(output, ble_discovery)).lower()
     assert HOME.password not in caplog.text
@@ -510,7 +512,7 @@ async def test_a_node_out_of_ble_range_fails_with_a_clear_reason(
     radio.connection = None
 
     with pytest.raises(improv.SetupError):
-        await controller.pair_device(ble_discovery, credentials=None)
+        await hub_pairs(controller, ble_discovery, credentials=None)
 
     assert "bluetooth" in (await last_error(output, ble_discovery)).lower()
 
@@ -520,7 +522,7 @@ async def test_bluetooth_held_by_another_integration_fails_with_a_clear_reason(
 ):
     async with router_of(controller).exclusive(node.address, owner="matter"):
         with pytest.raises(improv.SetupError):
-            await controller.pair_device(ble_discovery, credentials=None)
+            await hub_pairs(controller, ble_discovery, credentials=None)
 
     assert node.received == []
     assert "busy" in (await last_error(output, ble_discovery)).lower()
@@ -540,10 +542,10 @@ async def test_a_node_heard_best_through_another_esphome_node_is_set_up_through_
     await node.advertise(radio, rssi=-95)
     await node.advertise(proxy, rssi=-50)
     (discovery,) = controller.discoveries.values()
-    await hub_creates_device(controller.platform, discovery)
+    user_picks(discovery)
     joins_as_keyless_device(node, mdns)
 
-    assert await controller.pair_device(discovery, credentials=None) == controller.device_uuid(KEYLESS.mac)
+    assert await hub_pairs(controller, discovery, credentials=None) == controller.device_uuid(KEYLESS.mac)
 
     assert node.received == [HOME]
     assert (proxy.connected, radio.connected) == ([node.address], [])
@@ -553,7 +555,7 @@ async def test_a_node_that_never_shows_up_on_the_network_times_out_with_a_clear_
     controller: ESPhomeController, ble_discovery: Discovery, node: FakeImprovNode, output: RecordingControllerOutput
 ):
     with pytest.raises(TimeoutError):
-        await controller.pair_device(ble_discovery, credentials=None)
+        await hub_pairs(controller, ble_discovery, credentials=None)
 
     assert node.received == [HOME]
     assert "did not show up on the network" in await last_error(output, ble_discovery)
@@ -574,7 +576,7 @@ async def test_a_hub_without_wifi_cannot_set_up_the_node(
     radio.connection = None  # any BLE step would fail with another error
 
     with pytest.raises(MissingCredentialsError) as raised:
-        await controller.pair_device(ble_discovery, credentials=None)
+        await hub_pairs(controller, ble_discovery, credentials=None)
 
     assert raised.value.type == MissingCredentialsError.WIFI
     assert node.received == []
@@ -587,7 +589,7 @@ async def test_the_reason_stays_on_the_discovery_while_the_node_keeps_advertisin
 ):
     node.fails_with = Error.UNKNOWN_ERROR
     with pytest.raises(improv.SetupError):
-        await controller.pair_device(ble_discovery, credentials=None)
+        await hub_pairs(controller, ble_discovery, credentials=None)
 
     await node.advertise(radio, named=False)  # a changed advert: the SDK passes it on
 
@@ -606,7 +608,7 @@ async def test_a_setup_waiting_for_the_node_on_the_network_ends_with_a_stop(
         joined.set()  # on Wi-Fi, not announced yet
 
     node.on_joined = appear
-    pairing = asyncio.create_task(controller.pair_device(ble_discovery, credentials=None))
+    pairing = asyncio.create_task(hub_pairs(controller, ble_discovery, credentials=None))
     await asyncio.wait_for(joined.wait(), 5)
 
     await controller.stop()
@@ -621,7 +623,7 @@ async def test_a_setup_waiting_for_the_button_ends_with_a_stop(
     controller: ESPhomeController, ble_discovery: Discovery, node: FakeImprovNode, router: BLEService
 ):
     node.state = State.AUTHORIZATION_REQUIRED
-    pairing = asyncio.create_task(controller.pair_device(ble_discovery, credentials=None))
+    pairing = asyncio.create_task(hub_pairs(controller, ble_discovery, credentials=None))
     await wait_until(
         lambda: "button" in (controller.discoveries[ble_discovery.id].last_error or ""), 5, "the instruction"
     )
@@ -638,7 +640,7 @@ async def test_a_setup_whose_request_went_away_lets_go_of_the_node(
     controller: ESPhomeController, ble_discovery: Discovery, node: FakeImprovNode, router: BLEService
 ):
     node.state = State.AUTHORIZATION_REQUIRED
-    pairing = asyncio.create_task(controller.pair_device(ble_discovery, credentials=None))
+    pairing = asyncio.create_task(hub_pairs(controller, ble_discovery, credentials=None))
     await wait_until(
         lambda: "button" in (controller.discoveries[ble_discovery.id].last_error or ""), 5, "the instruction"
     )
