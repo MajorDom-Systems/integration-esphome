@@ -413,7 +413,7 @@ class ESPhomeController(
             logger.exception("Error handling BLE discovery")
 
     def _node_uuid(self, mac: str | None, node_name: str) -> UUID:
-        """A node is known by its MAC (raw bytes); one that announces none, by its name, whose dashes are significant."""
+        """A node is known by its MAC (raw bytes); one that announces none, by its name (dashes are significant)."""
         if mac:
             try:
                 return self.device_uuid(bytes.fromhex(mac.replace(":", "")))
