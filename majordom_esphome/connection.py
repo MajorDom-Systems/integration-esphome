@@ -93,6 +93,11 @@ class ESPhomeDeviceConnection:
     def ready(self) -> bool:
         return self._ready.is_set()
 
+    @property
+    def running(self) -> bool:
+        """Connected or retrying: started and not stopped since."""
+        return self._task is not None and not self._task.done()
+
     async def start(self):
         self._failed.clear()
         self.last_error = None
