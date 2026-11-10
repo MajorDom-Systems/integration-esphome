@@ -424,7 +424,7 @@ async def test_with_a_setup_code_the_dataset_crosses_sealed_by_it(
     node.verifier, node.state = FakeVerifier(), State.AWAITING_AUTHORIZATION
     attaches_as_keyless_device(node, mdns)
 
-    await controller.pair_device(ble_discovery, ProvidedCredentials(type=CredentialsType.code, value="2020-2021"))
+    await hub_pairs(controller, ble_discovery, ProvidedCredentials(type=CredentialsType.code, value="2020-2021"))
 
     assert node.received == [DATASET]
     assert bytes.fromhex(NETWORK_KEY) not in b"".join(node.writes), "the network key crossed in clear text"

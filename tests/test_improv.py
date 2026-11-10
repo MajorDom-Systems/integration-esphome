@@ -761,7 +761,7 @@ async def coded_discovery(controller: ESPhomeController, node: FakeImprovNode, r
     node.verifier, node.state = FakeVerifier(), State.AUTHORIZATION_REQUIRED
     await node.advertise(radio)
     (found,) = controller.discoveries.values()
-    await hub_creates_device(controller.platform, found)
+    user_picks(found)
     return found
 
 
@@ -778,7 +778,7 @@ async def test_the_setup_code_authorizes_the_hub_and_seals_the_wifi_password(
 ):
     joins_as_keyless_device(node, mdns)
 
-    assert await controller.pair_device(coded_discovery, SETUP_CODE) == controller.device_uuid(KEYLESS.mac)
+    assert await hub_pairs(controller, coded_discovery, SETUP_CODE) == controller.device_uuid(KEYLESS.mac)
 
     assert node.received == [HOME]
     assert not any(HOME.password.encode() in write for write in node.writes), "the password crossed in clear text"
@@ -789,7 +789,7 @@ async def test_a_wrong_setup_code_fails_closed_with_a_clear_reason(
     controller: ESPhomeController, coded_discovery: Discovery, node: FakeImprovNode, output: RecordingControllerOutput
 ):
     with pytest.raises(improv.SetupError):
-        await controller.pair_device(coded_discovery, ProvidedCredentials(type=CredentialsType.code, value="20202022"))
+        await hub_pairs(controller, coded_discovery, ProvidedCredentials(type=CredentialsType.code, value="20202022"))
 
     assert node.received == []
     assert [write[0] for write in node.writes] == [setup_code.COMMAND_BEGIN, setup_code.COMMAND_SHARE]
@@ -801,7 +801,7 @@ async def test_a_setup_code_for_a_node_without_one_sends_nothing(
     controller: ESPhomeController, ble_discovery: Discovery, node: FakeImprovNode, output: RecordingControllerOutput
 ):
     with pytest.raises(improv.SetupError):
-        await controller.pair_device(ble_discovery, SETUP_CODE)
+        await hub_pairs(controller, ble_discovery, SETUP_CODE)
 
     assert node.received == [] and node.writes == []
     assert "no setup code" in (await last_error(output, ble_discovery)).lower()

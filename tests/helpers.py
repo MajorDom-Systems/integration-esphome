@@ -17,7 +17,7 @@ from majordom_integration_sdk.testing import RecordingControllerOutput
 
 from majordom_esphome import setup_code
 from majordom_esphome.controller import ESPhomeController
-from majordom_esphome.models import ESPhomeDevice, ESPhomeDeviceIntegrationData, ESPhomeDeviceState, ESPhomeParameter
+from majordom_esphome.models import ESPhomeDevice, ESPhomeDeviceState, ESPhomeParameter
 from majordom_esphome.setup_code import COMMAND_ENCRYPTED, ORDER, G, M, N, context, decode, derive, encode, frame, mul
 
 ROOM = UUID(int=42)
