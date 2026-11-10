@@ -42,7 +42,7 @@ async def mock_paired(controller: ESPhomeController, mock_discovery: Discovery, 
     }
     await hub_pairs(controller, mock_discovery, credentials=None)
     async with controller.platform.device_repository(controller) as repo:
-        stored = await repo.get(mock_discovery.id, as_=ESPhomeDevice)
+        stored = await repo.get(physical_id=mock_discovery.id, as_=ESPhomeDevice)
     assert stored is not None
     return stored
 
@@ -74,7 +74,7 @@ async def test_pairing_skips_entities_it_cannot_map(
     await hub_pairs(controller, mock_discovery, credentials=None)
 
     async with controller.platform.device_repository(controller) as repo:
-        stored = await repo.get(mock_discovery.id, as_=ESPhomeDevice)
+        stored = await repo.get(physical_id=mock_discovery.id, as_=ESPhomeDevice)
     assert stored is not None
     assert {p.integration_data.entity_name for p in stored.parameters} == {"Relay"}
 
@@ -123,7 +123,7 @@ async def test_command_to_disconnected_device_fails_visibly(
         )
 
     async with controller.platform.device_repository(controller) as repo:
-        stored = await repo.get(mock_paired.physical_id, as_=ESPhomeDevice)
+        stored = await repo.get(physical_id=mock_paired.physical_id, as_=ESPhomeDevice)
     assert stored is not None
     assert stored.last_error, "a failed command must leave a user-readable last_error on the device"
 
@@ -137,7 +137,7 @@ async def test_command_on_read_only_parameter_is_rejected(
     connection.get_entities.return_value = {3: make_entity(SensorInfo, 3, "Temperature")}
     await hub_pairs(controller, mock_discovery, credentials=None)
     async with controller.platform.device_repository(controller) as repo:
-        stored = await repo.get(mock_discovery.id, as_=ESPhomeDevice)
+        stored = await repo.get(physical_id=mock_discovery.id, as_=ESPhomeDevice)
     assert stored is not None
     temperature = param(stored, "Temperature")
 

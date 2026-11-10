@@ -76,7 +76,7 @@ async def keyless_discovery(controller: ESPhomeController, mdns: FakeMDNS, keyle
 
 async def stored(controller: ESPhomeController, device_id: Any) -> ESPhomeDevice:
     async with controller.platform.device_repository(controller) as repo:
-        device = await repo.get(device_id, as_=ESPhomeDevice)
+        device = await repo.get(physical_id=device_id, as_=ESPhomeDevice)
     assert device is not None
     return device
 

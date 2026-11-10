@@ -521,7 +521,7 @@ class ESPhomeController(
 
     async def _update_device(self, device_id: UUID, **changes: Any) -> ESPhomeDevice | None:
         async with self.platform.device_repository(self) as repo:
-            device = await repo.get(device_id, as_=ESPhomeDevice)
+            device = await repo.get(physical_id=device_id, as_=ESPhomeDevice)
             if device is None:
                 return None
             if any(getattr(device, field) != value for field, value in changes.items()):
@@ -531,7 +531,7 @@ class ESPhomeController(
 
     async def _save_integration_data(self, device_id: UUID, **changes: Any):
         async with self.platform.device_repository(self) as repo:
-            device = await repo.get(device_id, as_=ESPhomeDevice)
+            device = await repo.get(physical_id=device_id, as_=ESPhomeDevice)
             if device is not None:
                 data = device.integration_data.model_copy(update=changes)
                 await repo.save(device.model_copy(update={"integration_data": data}))
@@ -630,7 +630,7 @@ class ESPhomeController(
     async def _keep_setting(self, device_id: UUID, object_id: str, field: str, parameter: ESPhomeParameter, value: Any):
         kept = mapper.local_value(parameter, value)
         async with self.platform.device_repository(self) as repo:
-            device = await repo.get(device_id, as_=ESPhomeDevice)
+            device = await repo.get(physical_id=device_id, as_=ESPhomeDevice)
             if device is None:
                 raise ValueError(f"Unknown device {device_id}")
             settings = {**device.integration_data.settings}

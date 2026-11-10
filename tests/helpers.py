@@ -157,6 +157,6 @@ async def assert_not_paired(platform: Platform, device_id: UUID, kept_key: bool 
     """A failed pairing leaves no device (the Hub saves only what pairing returned) and, except (`kept_key`) the key
     the integration already set on the node, kept so the node is not locked out of the next attempt, no key."""
     async with platform.make_device_repository(ESPhomeController.slug()) as repo:
-        assert await repo.get(device_id) is None
+        assert await repo.get(physical_id=device_id) is None
     keys = read_json(platform.documents_root / ESPhomeController.slug() / "keys.json")
     assert bool(keys) == kept_key

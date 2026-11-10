@@ -73,7 +73,7 @@ async def test_pairing_with_the_key_works_like_a_plain_device(
     await hub_pairs(controller, encrypted_discovery, secret(KEY))
 
     async with controller.platform.device_repository(controller) as repo:
-        stored = await repo.get(encrypted_discovery.id, as_=ESPhomeDevice)
+        stored = await repo.get(physical_id=encrypted_discovery.id, as_=ESPhomeDevice)
     assert stored is not None
     assert len(stored.parameters) == 33
     assert stored.integration_data.encryption_key == KEY

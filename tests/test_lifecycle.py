@@ -14,7 +14,7 @@ from tests.virtual.runner import VirtualDevice
 
 async def stored_device(controller: ESPhomeController, device_id) -> ESPhomeDevice:
     async with controller.platform.device_repository(controller) as repo:
-        stored = await repo.get(device_id, as_=ESPhomeDevice)
+        stored = await repo.get(physical_id=device_id, as_=ESPhomeDevice)
     assert stored is not None
     return stored
 

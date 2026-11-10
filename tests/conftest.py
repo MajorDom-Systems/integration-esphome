@@ -153,7 +153,7 @@ async def paired(controller: ESPhomeController, discovery: Discovery) -> ESPhome
     """The plain virtual device, paired and connected."""
     await hub_pairs(controller, discovery, credentials=None)
     async with controller.platform.device_repository(controller) as repo:
-        stored = await repo.get(discovery.id, as_=ESPhomeDevice)
+        stored = await repo.get(physical_id=discovery.id, as_=ESPhomeDevice)
     assert stored is not None
     return stored
 

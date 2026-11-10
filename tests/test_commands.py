@@ -135,7 +135,7 @@ async def test_command_to_an_offline_device_fails_visibly(
         await command(controller, paired, "Relay", "state", True)
 
     async with controller.platform.device_repository(controller) as repo:
-        stored = await repo.get(paired.physical_id, as_=ESPhomeDevice)
+        stored = await repo.get(physical_id=paired.physical_id, as_=ESPhomeDevice)
     assert stored is not None
     assert stored.last_error
 

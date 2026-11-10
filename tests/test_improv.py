@@ -348,8 +348,8 @@ async def test_pairing_gives_the_node_the_hubs_wifi_then_pairs_it_with_a_key_of_
     assert device_id is not None
     assert device_id == controller.device_uuid(bytes.fromhex(KEYLESS.mac)), "the device takes the node's own identity"
     async with controller.platform.device_repository(controller) as repo:
-        device = await repo.get(device_id, as_=ESPhomeDevice)
-        assert await repo.get(ble_discovery.id) is None, "the Hub's device moved to the node's identity"
+        device = await repo.get(physical_id=device_id, as_=ESPhomeDevice)
+        assert await repo.get(physical_id=ble_discovery.id) is None, "the Hub's device moved to the node's identity"
     assert device is not None
     assert device.name == "Kitchen relay", "what the user chose is kept"
     assert device.integration_data.encryption_key and device.parameters

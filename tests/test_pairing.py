@@ -126,7 +126,7 @@ async def test_pairing_keeps_what_the_hub_already_knows_about_the_device(
     await hub_pairs(controller, discovery, credentials=None)
 
     async with controller.platform.device_repository(controller) as repo:
-        stored = await repo.get(discovery.id, as_=ESPhomeDevice)
+        stored = await repo.get(physical_id=discovery.id, as_=ESPhomeDevice)
     assert stored is not None
     assert (stored.room_id, stored.name) == (ROOM, "Kitchen relay")  # the user's choices, saved by the Hub
 
@@ -146,7 +146,7 @@ async def test_pairing_fills_the_draft_and_saves_nothing_itself(
     assert filled.id == hub_id, "the Hub's id is not touched"
     assert filled.parameters and filled.integration_data.addresses
     async with controller.platform.device_repository(controller) as repo:
-        assert await repo.get(discovery.id) is None  # the Hub saves it
+        assert await repo.get(physical_id=discovery.id) is None  # the Hub saves it
     await asyncio.sleep(0.1)
     assert output.connected_devices == [] and changes(output) == [], "nothing is reported before the Hub saved it"
 
@@ -183,7 +183,7 @@ async def test_device_can_be_paired_again_after_unpairing(
     await hub_pairs(controller, discovery, credentials=None)
 
     async with controller.platform.device_repository(controller) as repo:
-        again = await repo.get(discovery.id, as_=ESPhomeDevice)
+        again = await repo.get(physical_id=discovery.id, as_=ESPhomeDevice)
     assert again is not None
     assert [p.id for p in again.parameters] == [p.id for p in paired.parameters]
 
@@ -217,7 +217,7 @@ async def test_pairing_is_retryable_after_the_device_comes_back(
     await hub_pairs(controller, output.updated_discoveries[-1], credentials=None)
 
     async with controller.platform.device_repository(controller) as repo:
-        stored = await repo.get(discovery.id, as_=ESPhomeDevice)
+        stored = await repo.get(physical_id=discovery.id, as_=ESPhomeDevice)
     assert stored is not None
     assert stored.last_error is None
     await wait_for_value(output, param(stored, "Temperature"))
