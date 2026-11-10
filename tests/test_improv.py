@@ -545,7 +545,7 @@ async def test_a_node_heard_best_through_another_esphome_node_is_set_up_through_
     await node.advertise(radio, rssi=-95)
     await node.advertise(proxy, rssi=-50)
     (discovery,) = controller.discoveries.values()
-    await hub_creates_device(controller.platform, discovery)
+    user_picks(discovery)
     joins_as_keyless_device(node, mdns)
 
     assert await hub_pairs(controller, discovery, credentials=None) == controller.device_uuid(
@@ -685,7 +685,7 @@ async def test_the_wifi_password_crosses_only_an_encrypted_link(
 ):
     joins_as_keyless_device(node, mdns)
 
-    await controller.pair_device(ble_discovery, credentials=None)
+    await hub_pairs(controller, ble_discovery)
 
     assert node.received == [HOME] and node.unencrypted_writes == []
     assert node.unpaired, "the bond served only the setup"
@@ -703,10 +703,10 @@ async def test_a_node_heard_best_through_a_proxy_that_cannot_pair_is_set_up_thro
     await node.advertise(radio, rssi=-80)
     await node.advertise(proxy, rssi=-50)
     (discovery,) = controller.discoveries.values()
-    await hub_creates_device(controller.platform, discovery)
+    user_picks(discovery)
     joins_as_keyless_device(node, mdns)
 
-    await controller.pair_device(discovery, credentials=None)
+    await hub_pairs(controller, discovery)
 
     assert node.received == [HOME] and node.unencrypted_writes == []
     assert (proxy.connected, radio.connected) == ([], [node.address])
@@ -722,7 +722,7 @@ async def test_no_radio_that_can_pair_fails_with_a_clear_reason_and_sends_nothin
     radio.is_pairable = False
 
     with pytest.raises(improv.EncryptionError):
-        await controller.pair_device(ble_discovery, credentials=None)
+        await hub_pairs(controller, ble_discovery)
 
     assert node.received == [] and node.unencrypted_writes == []
     assert "encrypt" in (await last_error(output, ble_discovery)).lower()

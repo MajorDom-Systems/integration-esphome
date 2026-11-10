@@ -334,7 +334,7 @@ async def test_the_dataset_crosses_only_an_encrypted_link(
 ):
     attaches_as_keyless_device(node, mdns)
 
-    await controller.pair_device(ble_discovery, credentials=None)
+    await hub_pairs(controller, ble_discovery)
 
     assert node.received == [DATASET] and node.unencrypted_writes == []
     assert node.unpaired, "the bond served only the setup"
@@ -350,7 +350,7 @@ async def test_a_radio_that_cannot_pair_is_refused_before_the_node_is_touched(
     radio.is_pairable = False  # e.g. an ESPHome proxy without pairing
 
     with pytest.raises(improv.EncryptionError):
-        await controller.pair_device(ble_discovery, credentials=None)
+        await hub_pairs(controller, ble_discovery)
 
     assert "encrypt" in (await last_error(output, ble_discovery)).lower()
     assert radio.connected == [] and node.writes == [] and node.unencrypted_writes == []
@@ -363,7 +363,7 @@ async def test_a_node_that_refuses_pairing_is_sent_nothing(
     node.accepts_pairing = False
 
     with pytest.raises(improv.EncryptionError):
-        await controller.pair_device(ble_discovery, credentials=None)
+        await hub_pairs(controller, ble_discovery)
 
     assert node.writes == [] and node.unencrypted_writes == []
     assert "encrypt" in (await last_error(output, ble_discovery)).lower()
@@ -382,7 +382,7 @@ async def test_an_unencrypted_link_is_used_only_when_allowed_for_legacy_firmware
     controller.settings = ESPhomeController.Settings(is_unencrypted_provisioning_allowed=True)
     attaches_as_keyless_device(node, mdns)
 
-    await controller.pair_device(ble_discovery, credentials=None)
+    await hub_pairs(controller, ble_discovery)
 
     assert node.received == [DATASET] and node.unencrypted_writes
     assert "unencrypted" in caplog.text
