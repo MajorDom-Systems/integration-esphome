@@ -70,14 +70,14 @@ async def test_address_changes_are_followed_while_paired(
 
     # DHCP hands the node a new address: mDNS announces it, the old one is forgotten, the new one is tried first
     await mdns.announce(Advert(port=device.port, server="localhost.", addresses=["::1"]))
-    assert (await stored(controller, paired.id)).integration_data.addresses == ["::1", "localhost"]
+    assert (await stored(controller, paired.physical_id)).integration_data.addresses == ["::1", "localhost"]
 
     # the next connection (the node reboots) tries `::1`, fails, and then remembers the hostname that worked
     output.connected_devices.clear()
     await device.restart()
-    await wait_until(lambda: paired.id in output.connected_devices, 40, "the device to reconnect")
+    await wait_until(lambda: paired.physical_id in output.connected_devices, 40, "the device to reconnect")
     await wait_for_value(output, param(paired, "Temperature"))
-    assert (await stored(controller, paired.id)).integration_data.addresses == ["localhost", "::1"]
+    assert (await stored(controller, paired.physical_id)).integration_data.addresses == ["localhost", "::1"]
 
 
 async def test_announcement_of_a_paired_node_without_changes_leaves_addresses_alone(
@@ -88,4 +88,6 @@ async def test_announcement_of_a_paired_node_without_changes_leaves_addresses_al
 
     await mdns.announce(advert)
 
-    assert (await stored(controller, paired.id)).integration_data.addresses == paired.integration_data.addresses
+    assert (
+        await stored(controller, paired.physical_id)
+    ).integration_data.addresses == paired.integration_data.addresses

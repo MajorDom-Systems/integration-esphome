@@ -56,7 +56,7 @@ async def test_pairing_stores_a_parameter_per_entity_capability(
     assert (relay.data_type, relay.role) == (ParameterDataType.bool, ParameterRole.control)
     assert param(mock_paired, "Lamp", "state").data_type == ParameterDataType.bool
     assert param(mock_paired, "Lamp", "brightness").data_type == ParameterDataType.decimal
-    assert mock_paired.id in output.connected_devices
+    assert mock_paired.physical_id in output.connected_devices
     assert mock_paired.id not in controller.discoveries
     connection.start.assert_awaited_once()
     connection.wait_ready.assert_awaited_once()
@@ -123,7 +123,7 @@ async def test_command_to_disconnected_device_fails_visibly(
         )
 
     async with controller.platform.device_repository(controller) as repo:
-        stored = await repo.get(mock_paired.id, as_=ESPhomeDevice)
+        stored = await repo.get(mock_paired.physical_id, as_=ESPhomeDevice)
     assert stored is not None
     assert stored.last_error, "a failed command must leave a user-readable last_error on the device"
 
@@ -178,7 +178,8 @@ async def test_pairing_refuses_an_id_another_record_holds_before_connecting(
     async with controller.platform.device_repository(controller) as repo:
         await repo.save(
             ESPhomeDevice(
-                id=mock_discovery.id,
+                id=UUID(int=9),
+                physical_id=mock_discovery.id,
                 name="Old relay",
                 room_id=ROOM,
                 transport="tcp",
@@ -189,10 +190,14 @@ async def test_pairing_refuses_an_id_another_record_holds_before_connecting(
 
     with pytest.raises(DeviceIdTakenError) as taken:
         await controller.pair_device(
-            mock_discovery, draft_of(mock_discovery).model_copy(update={"id": UUID(int=7)}), None
+            mock_discovery, draft_of(mock_discovery).model_copy(update={"physical_id": UUID(int=7)}), None
         )
 
-    assert (taken.value.device_id, taken.value.name) == (mock_discovery.id, "Old relay")
+    assert (taken.value.physical_id, taken.value.device_id, taken.value.name) == (
+        mock_discovery.id,
+        UUID(int=9),
+        "Old relay",
+    )
     MockConn.assert_not_called()
 
 
@@ -201,12 +206,13 @@ async def test_pairing_onto_the_picked_record_keeps_only_what_is_this_nodes(
 ):
     kept = ESPhomeDeviceIntegrationData(encryption_key="its-key", settings={"lamp": {"transition_length": 2.0}})
     same = draft_of(mock_discovery).model_copy(update={"integration_data": kept})
-    other = same.model_copy(update={"id": UUID(int=7)})  # a record of another node: its data is stale
+    other = same.model_copy(update={"physical_id": UUID(int=7)})  # a record of another node: its data is stale
 
     assert (await controller.pair_device(mock_discovery, same, None)).integration_data.settings == kept.settings
     filled = await controller.pair_device(mock_discovery, other, None)
 
-    assert filled.id == mock_discovery.id
+    assert filled.physical_id == mock_discovery.id
+    assert filled.id == other.id
     assert (filled.integration_data.settings, filled.integration_data.encryption_key) == ({}, None)
 
 
@@ -248,7 +254,9 @@ async def test_a_paired_node_the_hub_never_saves_is_let_go_of(
 
 
 async def test_fetch_of_unknown_device_raises(controller: ESPhomeController, mock_paired: ESPhomeDevice):
-    stranger = mock_paired.model_copy(update={"id": UUID(int=1), "integration_data": ESPhomeDeviceIntegrationData()})
+    stranger = mock_paired.model_copy(
+        update={"physical_id": UUID(int=1), "integration_data": ESPhomeDeviceIntegrationData()}
+    )
 
     with pytest.raises(ConnectionError):
         await controller.fetch(stranger)

@@ -349,8 +349,9 @@ async def test_a_given_key_outlasts_a_hard_delete_so_the_node_pairs_again_withou
     user_picks(found)
     await hub_pairs(controller, found, credentials=None)
     given = node.key
-    await controller.unpair(await stored(controller, found.id))
-    del store[found.id]
+    device = await stored(controller, found.id)
+    await controller.unpair(device)
+    del store[device.id]
 
     again = await discover(controller, mdns, Advert(encrypted=True))
     assert again.expected_credentials_options == [CredentialsType.none, CredentialsType.secret]

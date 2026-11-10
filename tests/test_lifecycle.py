@@ -43,9 +43,9 @@ async def test_paired_devices_reconnect_when_the_hub_restarts(
 
     await restarted.start()
     try:
-        await wait_until(lambda: paired.id in output.connected_devices, 15, "the paired device to reconnect")
+        await wait_until(lambda: paired.physical_id in output.connected_devices, 15, "the paired device to reconnect")
         await wait_for_value(output, param(paired, "Temperature"))
-        assert (await stored_device(restarted, paired.id)).available
+        assert (await stored_device(restarted, paired.physical_id)).available
     finally:
         await restarted.stop()
 
@@ -58,12 +58,12 @@ async def test_outage_and_recovery_are_reported(
     output.connected_devices.clear()
 
     await device.stop()
-    await wait_until(lambda: paired.id in output.lost_devices, 15, "the outage to be reported")
-    assert not (await stored_device(controller, paired.id)).available
+    await wait_until(lambda: paired.physical_id in output.lost_devices, 15, "the outage to be reported")
+    assert not (await stored_device(controller, paired.physical_id)).available
 
     await device.start()
-    await wait_until(lambda: paired.id in output.connected_devices, 40, "the recovery to be reported")
-    recovered = await stored_device(controller, paired.id)
+    await wait_until(lambda: paired.physical_id in output.connected_devices, 40, "the recovery to be reported")
+    recovered = await stored_device(controller, paired.physical_id)
     assert recovered.available
     assert recovered.last_error is None
     output.events.clear()
@@ -87,13 +87,15 @@ async def test_startup_with_an_offline_device_does_not_block_and_recovers(
     async with asyncio.timeout(5):
         await restarted.start()  # a dead device must not hold the Hub's startup
     try:
-        await wait_until(lambda: paired.id not in output.connected_devices, 1)
+        await wait_until(lambda: paired.physical_id not in output.connected_devices, 1)
         await _wait_unavailable(restarted, paired)
-        assert (await stored_device(restarted, paired.id)).last_error
+        assert (await stored_device(restarted, paired.physical_id)).last_error
 
         await device.start()
-        await wait_until(lambda: paired.id in output.connected_devices, 40, "the device to connect once it is up")
-        assert (await stored_device(restarted, paired.id)).last_error is None
+        await wait_until(
+            lambda: paired.physical_id in output.connected_devices, 40, "the device to connect once it is up"
+        )
+        assert (await stored_device(restarted, paired.physical_id)).last_error is None
     finally:
         await restarted.stop()
 
@@ -101,7 +103,7 @@ async def test_startup_with_an_offline_device_does_not_block_and_recovers(
 async def _wait_unavailable(controller: ESPhomeController, paired: ESPhomeDevice):
     deadline = asyncio.get_running_loop().time() + 20
     while asyncio.get_running_loop().time() < deadline:
-        stored = await stored_device(controller, paired.id)
+        stored = await stored_device(controller, paired.physical_id)
         if not stored.available:
             return
         await asyncio.sleep(0.2)

@@ -105,12 +105,12 @@ async def test_the_remaining_fields_are_settings_with_the_limits_the_entity_repo
 
 
 async def test_identity_is_derived_through_the_sdk_helpers(controller: ESPhomeController, paired: ESPhomeDevice):
-    assert paired.id == controller.device_uuid("983569abf679")
+    assert paired.physical_id == controller.device_uuid(bytes.fromhex("983569abf679"))
     for parameter in paired.parameters:
         key = (
             f"{parameter.integration_data.entity_name.lower().replace(' ', '_')}_{parameter.integration_data.sub_field}"
         )
-        assert parameter.id == controller.parameter_uuid(paired.id, key)
+        assert parameter.id == controller.parameter_uuid(paired.physical_id, key)
 
 
 async def test_device_has_a_one_tap_main_parameter(paired: ESPhomeDevice):
@@ -137,9 +137,13 @@ async def test_pairing_fills_the_draft_and_saves_nothing_itself(
     await mdns.announce(Advert(port=device.port))
     (discovery,) = controller.discoveries.values()
 
-    filled = await controller.pair_device(discovery, draft_of(discovery), None)
+    draft = draft_of(discovery)
+    hub_id = draft.id
 
-    assert (filled.id, filled.name, filled.available) == (discovery.id, "Kitchen relay", True)
+    filled = await controller.pair_device(discovery, draft, None)
+
+    assert (filled.physical_id, filled.name, filled.available) == (discovery.id, "Kitchen relay", True)
+    assert filled.id == hub_id, "the Hub's id is not touched"
     assert filled.parameters and filled.integration_data.addresses
     async with controller.platform.device_repository(controller) as repo:
         assert await repo.get(discovery.id) is None  # the Hub saves it

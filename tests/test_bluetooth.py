@@ -571,7 +571,7 @@ def esphome(runtime: Runtime) -> ESPhomeController:
 async def announce(controller: ESPhomeController, mdns: FakeMDNS, node: str) -> Discovery:
     mac = NODES[node].replace(":", "")
     await mdns.announce(Advert(name=node, mac=mac, server=f"{node}.local.", addresses=[]))
-    return controller.discoveries[controller.device_uuid(mac)]
+    return controller.discoveries[controller.device_uuid(bytes.fromhex(mac))]
 
 
 async def pair(controller: ESPhomeController, mdns: FakeMDNS, node: str) -> ESPhomeDevice:

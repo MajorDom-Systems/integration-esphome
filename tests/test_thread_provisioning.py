@@ -213,7 +213,7 @@ async def test_pairing_gives_the_node_the_hubs_thread_network_then_pairs_it_with
 
     assert node.received == [DATASET]
     assert device_id is not None
-    assert device_id == controller.device_uuid(KEYLESS.mac), "the device takes the node's own identity"
+    assert device_id == controller.device_uuid(bytes.fromhex(KEYLESS.mac)), "the device takes the node's own identity"
     async with controller.platform.device_repository(controller) as repo:
         device = await repo.get(device_id, as_=ESPhomeDevice)
     assert device is not None and device.integration_data.encryption_key and device.parameters

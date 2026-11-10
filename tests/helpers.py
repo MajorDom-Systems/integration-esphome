@@ -5,7 +5,7 @@ import contextlib
 import time
 from collections.abc import Callable
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from majordom_integration_sdk import DeviceIdTakenError, Platform
 from majordom_integration_sdk.files import read_json
@@ -30,7 +30,8 @@ def user_picks(discovery: Discovery, name: str = "Kitchen relay", room: UUID = R
 
 def draft_of(discovery: Discovery, name: str = "Kitchen relay", room: UUID = ROOM) -> ESPhomeDeviceState:
     return ESPhomeDeviceState(
-        id=discovery.id,
+        id=uuid4(),
+        physical_id=discovery.id,
         name=name,
         room_id=room,
         transport=discovery.transport,
@@ -59,10 +60,10 @@ async def hub_pairs(
     async with controller.platform.device_repository(controller) as repo:
         await repo.save(ESPhomeDevice.model_validate(device.model_dump()))
     if device.available:
-        await controller.output.controller_did_connect_device(controller, device.id)
+        await controller.output.controller_did_connect_device(controller, device.physical_id)
     with contextlib.suppress(Exception):
         await controller.fetch(ESPhomeDevice.model_validate(device.model_dump()))
-    return device.id
+    return device.physical_id
 
 
 async def wait_until(predicate: Callable[[], Any], timeout: float = 10.0, message: str = "condition"):

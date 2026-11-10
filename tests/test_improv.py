@@ -221,7 +221,7 @@ async def test_a_node_waiting_for_wifi_is_discovered_by_its_name(
     await node.advertise(radio)
 
     (discovery,) = output.received_discoveries
-    assert discovery.id == controller.device_uuid(f"improv:{node.name}")
+    assert discovery.id == controller.device_uuid(f"improv:{node.name}", strip="")
     assert (discovery.transport, discovery.device_name) == ("ble", node.name)
     assert discovery.expected_credentials_options == [CredentialsType.none], "the Hub gives it its own Wi-Fi"
 
@@ -346,7 +346,7 @@ async def test_pairing_gives_the_node_the_hubs_wifi_then_pairs_it_with_a_key_of_
 
     assert node.received == [HOME]
     assert device_id is not None
-    assert device_id == controller.device_uuid(KEYLESS.mac), "the device takes the node's own identity"
+    assert device_id == controller.device_uuid(bytes.fromhex(KEYLESS.mac)), "the device takes the node's own identity"
     async with controller.platform.device_repository(controller) as repo:
         device = await repo.get(device_id, as_=ESPhomeDevice)
         assert await repo.get(ble_discovery.id) is None, "the Hub's device moved to the node's identity"
@@ -545,7 +545,9 @@ async def test_a_node_heard_best_through_another_esphome_node_is_set_up_through_
     user_picks(discovery)
     joins_as_keyless_device(node, mdns)
 
-    assert await hub_pairs(controller, discovery, credentials=None) == controller.device_uuid(KEYLESS.mac)
+    assert await hub_pairs(controller, discovery, credentials=None) == controller.device_uuid(
+        bytes.fromhex(KEYLESS.mac)
+    )
 
     assert node.received == [HOME]
     assert (proxy.connected, radio.connected) == ([node.address], [])
