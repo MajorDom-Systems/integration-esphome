@@ -3,6 +3,7 @@
 Entities are real `aioesphomeapi` descriptions (what a device actually reports), not hand-made mocks.
 """
 
+import asyncio
 from typing import Any
 from unittest.mock import AsyncMock
 from uuid import UUID
@@ -228,6 +229,22 @@ async def test_unpair_rolls_back_a_draft_that_got_nowhere(controller: ESPhomeCon
     await controller.unpair(draft_of(mock_discovery))
 
     assert controller._connections == {} and controller._just_paired == {}
+
+
+async def test_a_paired_node_the_hub_never_saves_is_let_go_of(
+    controller: ESPhomeController,
+    mock_discovery: Discovery,
+    mock_connection: Any,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _, connection = mock_connection
+    monkeypatch.setattr(majordom_esphome.controller, "UNSAVED_PAIRING_TIMEOUT", 0.01)
+
+    await controller.pair_device(mock_discovery, draft_of(mock_discovery), None)
+    await asyncio.sleep(0.05)
+
+    assert controller._just_paired == {}
+    connection.stop.assert_awaited_once()
 
 
 async def test_fetch_of_unknown_device_raises(controller: ESPhomeController, mock_paired: ESPhomeDevice):

@@ -57,6 +57,7 @@ from .models import (
 
 logger = logging.getLogger(__name__)
 
+UNSAVED_PAIRING_TIMEOUT = 120.0  # seconds a paired node waits for the Hub to save it (and fetch it) before it is let go
 NODE_APPEAR_TIMEOUT = 60.0  # seconds for a node to announce itself over mDNS once it has joined Wi-Fi or Thread
 
 
@@ -76,6 +77,7 @@ class _Paired:
     connection: ESPhomeDeviceConnection
     mac: str | None
     typed_key: bool  # the user typed the key: the one given earlier is forgotten once the node is taken in
+    expiry: asyncio.Task[None] | None = None
 
 
 @dataclass
@@ -87,8 +89,9 @@ class _ImprovNode:
     thread: bool = False
 
 
-# the draft type is Any: ControllerOutput takes a bare AbstractController, whose DeviceState default no subclass matches
-class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESPhomeController.Settings", Any]):
+class ESPhomeController(
+    AbstractController[ESPhomeDevice, ESPhomeParameter, "ESPhomeController.Settings", ESPhomeDeviceState]
+):
     name = "ESPHome"  # its key, the slug "esphome", scopes its devices
     # Nodes are found over mDNS. Devices on Thread reach the hub through a border router; Wi-Fi devices need nothing.
     # The router sets unprovisioned nodes up over Improv BLE; the nodes that proxy Bluetooth are offered back to it.
@@ -208,7 +211,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
     async def unpair(self, device: ESPhomeDevice | ESPhomeDeviceState):
         """Also the rollback of a pairing at any stage: a node given the network over BLE keeps it, a key given stays
         in the keys file (the node requires it from then on)."""
-        paired = self._just_paired.pop(device.id, None)
+        paired = self._unpark(device.id)
         connection = self._connections.pop(device.id, None)
         self._states.pop(device.id, None)
         self._paired.discard(device.id)
@@ -225,7 +228,7 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
     async def fetch(self, device: ESPhomeDevice):
         """Take a just paired node in, or connect a paired one whose connection is gone; report its values if it is
         connected. The connection retries by itself: nothing here waits for it."""
-        if (paired := self._just_paired.pop(device.id, None)) is not None:
+        if (paired := self._unpark(device.id)) is not None:
             await self._take_in(device.id, paired)
         elif device.id not in self._connections and device.integration_data.addresses:
             self._paired.add(device.id)
@@ -770,12 +773,12 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
             draft.integration_data.addresses = conn.addresses
 
             self._refuse_if_stopped(run)
-            previous = self._just_paired.pop(discovery.id, None)  # an earlier attempt the Hub never saved
+            previous = self._unpark(discovery.id)  # an earlier attempt the Hub never saved
             if previous is not None:
                 await previous.connection.stop()
-            self._just_paired[discovery.id] = _Paired(
-                conn, integration_data.mac, credentials_type == CredentialsType.secret
-            )
+            paired = _Paired(conn, integration_data.mac, credentials_type == CredentialsType.secret)
+            paired.expiry = self._spawn(self._let_go_unless_saved(discovery.id, paired))
+            self._just_paired[discovery.id] = paired
             return draft
 
         except asyncio.CancelledError:  # no one waits for the outcome: let go of the node
@@ -794,6 +797,21 @@ class ESPhomeController(AbstractController[ESPhomeDevice, ESPhomeParameter, "ESP
                 self._discoveries[discovery.id] = failed
                 await self.output.controller_did_update_discovery(self, failed)
             raise
+
+    def _unpark(self, device_id: UUID) -> _Paired | None:
+        paired = self._just_paired.pop(device_id, None)
+        if paired is not None and paired.expiry is not None:
+            paired.expiry.cancel()
+        return paired
+
+    async def _let_go_unless_saved(self, device_id: UUID, paired: _Paired):
+        """The Hub may refuse the id after pairing and never call unpair (the id may be another working device's):
+        a node no fetch took in is let go of."""
+        await asyncio.sleep(UNSAVED_PAIRING_TIMEOUT)
+        if self._just_paired.get(device_id) is paired:
+            del self._just_paired[device_id]
+            self._states.pop(device_id, None)
+            await paired.connection.stop()
 
     async def _take_in(self, device_id: UUID, paired: _Paired):
         """The Hub saved a just paired node: its connection reports from now on."""
