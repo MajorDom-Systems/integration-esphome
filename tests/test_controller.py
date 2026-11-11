@@ -314,3 +314,82 @@ async def test_a_start_cut_short_stops_cleanly_and_starts_again(
         assert len(controller.discoveries) == 1
     finally:
         await controller.stop()
+
+
+FACTORY_RESET_KEY = 77
+
+
+@pytest.fixture
+def factory_reset_button(mock_connection: Any, make_entity: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
+    from aioesphomeapi import ButtonInfo
+
+    monkeypatch.setattr("majordom_esphome.controller.FACTORY_RESET_GRACE", 0)
+    _, connection = mock_connection
+    entities = connection.get_entities.return_value
+    connection.get_entities.return_value = {
+        **entities,
+        FACTORY_RESET_KEY: make_entity(ButtonInfo, FACTORY_RESET_KEY, "Factory Reset"),
+    }
+    return connection
+
+
+async def test_unpair_presses_factory_reset_before_dropping_the_connection(
+    controller: ESPhomeController, mock_paired: ESPhomeDevice, factory_reset_button: Any
+):
+    calls: list[str] = []
+    factory_reset_button.send_command.side_effect = lambda *_: calls.append("press")
+    factory_reset_button.stop.side_effect = lambda: calls.append("stop")
+
+    await controller.unpair(mock_paired)
+
+    factory_reset_button.send_command.assert_awaited_once_with(FACTORY_RESET_KEY, "button", {"key": FACTORY_RESET_KEY})
+    assert calls == ["press", "stop"]
+
+
+async def test_unpair_skips_factory_reset_of_an_offline_node(
+    controller: ESPhomeController, mock_paired: ESPhomeDevice, factory_reset_button: Any
+):
+    factory_reset_button.ready = False
+
+    await controller.unpair(mock_paired)
+
+    factory_reset_button.send_command.assert_not_awaited()
+    factory_reset_button.stop.assert_awaited_once()
+
+
+async def test_unpair_skips_factory_reset_without_the_button(
+    controller: ESPhomeController, mock_paired: ESPhomeDevice, mock_connection: Any
+):
+    _, connection = mock_connection
+
+    await controller.unpair(mock_paired)
+
+    connection.send_command.assert_not_awaited()
+    connection.stop.assert_awaited_once()
+
+
+async def test_unpair_completes_when_the_factory_reset_fails(
+    controller: ESPhomeController, mock_paired: ESPhomeDevice, factory_reset_button: Any
+):
+    factory_reset_button.send_command.side_effect = ConnectionError("Device not connected")
+
+    await controller.unpair(mock_paired)
+
+    factory_reset_button.stop.assert_awaited_once()
+
+
+async def test_unpair_does_not_wait_forever_for_the_factory_reset(
+    controller: ESPhomeController,
+    mock_paired: ESPhomeDevice,
+    factory_reset_button: Any,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    async def hang(*_: Any):
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr("majordom_esphome.controller.FACTORY_RESET_TIMEOUT", 0.05)
+    factory_reset_button.send_command.side_effect = hang
+
+    await controller.unpair(mock_paired)
+
+    factory_reset_button.stop.assert_awaited_once()

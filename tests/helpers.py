@@ -8,7 +8,6 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from majordom_integration_sdk import DeviceIdTakenError, Platform
-from majordom_integration_sdk.files import read_json
 from majordom_integration_sdk.schemas import DeviceParameterChange, ProvidedCredentials
 from majordom_integration_sdk.schemas.device import Discovery
 from majordom_integration_sdk.schemas.parameter import ParameterDataType
@@ -153,10 +152,14 @@ def leaked_tasks() -> list[asyncio.Task[Any]]:
     return leaked
 
 
-async def assert_not_paired(platform: Platform, device_id: UUID, kept_key: bool = False):
-    """A failed pairing leaves no device (the Hub saves only what pairing returned) and, except (`kept_key`) the key
-    the integration already set on the node, kept so the node is not locked out of the next attempt, no key."""
+async def assert_not_paired(platform: Platform, device_id: UUID):
+    """A failed pairing leaves no device (the Hub saves only what pairing returned) and nothing kept on the side."""
     async with platform.make_device_repository(ESPhomeController.slug()) as repo:
         assert await repo.get(physical_id=device_id) is None
-    keys = read_json(platform.documents_root / ESPhomeController.slug() / "keys.json")
-    assert bool(keys) == kept_key
+    assert_no_side_storage(platform)
+
+
+def assert_no_side_storage(platform: Platform):
+    """Whatever the integration keeps about a device lives in its record (`integration_data`), never in a file."""
+    folder = platform.documents_root / ESPhomeController.slug()
+    assert not folder.exists() or not any(folder.iterdir())

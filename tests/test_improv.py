@@ -384,7 +384,7 @@ async def test_a_paired_node_set_up_again_fails_fast_as_already_paired(
 
     assert (taken.value.name, taken.value.is_paired) == ("Kitchen relay", True)
     assert "Kitchen relay" in await last_error(output, again)
-    await assert_not_paired(controller.platform, again.id, kept_key=True)  # the key the first pairing gave
+    await assert_not_paired(controller.platform, again.id)
 
 
 async def test_a_node_waiting_for_its_button_tells_the_user_then_carries_on(
