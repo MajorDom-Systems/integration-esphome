@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
-from majordom_integration_sdk.schemas.device import Device, Parameter
+from majordom_integration_sdk.schemas.device import Device, DeviceState, Parameter
 from majordom_integration_sdk.schemas.parameter import (
     ParameterDataType,
     ParameterRole,
@@ -60,6 +60,10 @@ class ESPhomeDevice(Device[ESPhomeDeviceIntegrationData]):
 
 class ESPhomeParameter(Parameter[ESPhomeParameterIntegrationData]):
     pass
+
+
+class ESPhomeDeviceState(DeviceState[ESPhomeDeviceIntegrationData, ESPhomeParameterIntegrationData]):
+    """The pairing draft the Hub hands over and takes back filled in."""
 
 
 @dataclass(frozen=True)

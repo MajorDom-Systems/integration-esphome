@@ -16,7 +16,8 @@ from majordom_integration_sdk.testing import RecordingControllerOutput, build_te
 
 from majordom_esphome.controller import ESPhomeController
 from majordom_esphome.models import ESPhomeDevice
-from tests.helpers import hub_creates_device
+from tests import helpers
+from tests.helpers import hub_pairs, user_picks
 from tests.virtual import catalogue
 from tests.virtual.mdns import Advert, FakeMDNS, fake_mdns
 from tests.virtual.runner import ENCRYPTED, PLAIN, SKETCHES, VirtualDevice, build, release_ports
@@ -143,19 +144,25 @@ async def discovery(controller: ESPhomeController, mdns: FakeMDNS, device: Virtu
     """The plain virtual device, discovered over mDNS and picked by the user (so the Hub has created the device)."""
     await mdns.announce(Advert(port=device.port))
     (found,) = controller.discoveries.values()
-    await hub_creates_device(controller.platform, found)
+    user_picks(found)
     return found
 
 
 @pytest_asyncio.fixture
 async def paired(controller: ESPhomeController, discovery: Discovery) -> ESPhomeDevice:
     """The plain virtual device, paired and connected."""
-    await controller.pair_device(discovery, credentials=None)
+    await hub_pairs(controller, discovery, credentials=None)
     async with controller.platform.device_repository(controller) as repo:
-        stored = await repo.get(discovery.id, as_=ESPhomeDevice)
+        stored = await repo.get(physical_id=discovery.id, as_=ESPhomeDevice)
     assert stored is not None
     return stored
 
 
 def controls(device: ESPhomeDevice) -> list[Any]:
     return [p for p in device.parameters if p.role == ParameterRole.control]
+
+
+@pytest.fixture(autouse=True)
+def _forget_forms():
+    yield
+    helpers._forms.clear()

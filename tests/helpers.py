@@ -1,37 +1,68 @@
 """Test helpers shared by the unit and virtual-device suites."""
 
 import asyncio
+import contextlib
 import time
 from collections.abc import Callable
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
-from majordom_integration_sdk import Platform
-from majordom_integration_sdk.schemas import DeviceParameterChange
-from majordom_integration_sdk.schemas.device import Device, Discovery
+from majordom_integration_sdk import DeviceIdTakenError, Platform
+from majordom_integration_sdk.schemas import DeviceParameterChange, ProvidedCredentials
+from majordom_integration_sdk.schemas.device import Discovery
 from majordom_integration_sdk.schemas.parameter import ParameterDataType
 from majordom_integration_sdk.testing import RecordingControllerOutput
 
 from majordom_esphome.controller import ESPhomeController
-from majordom_esphome.models import ESPhomeDevice, ESPhomeDeviceIntegrationData, ESPhomeParameter
+from majordom_esphome.models import ESPhomeDevice, ESPhomeDeviceState, ESPhomeParameter
 
 ROOM = UUID(int=42)
 
 
-async def hub_creates_device(platform: Platform, discovery: Discovery, name: str = "Kitchen relay", room: UUID = ROOM):
-    """What the Hub does when the user picks a discovery: it creates the device (name, room) *before* asking the
-    integration to pair (`DeviceProvider.create_device`). The integration completes that device."""
-    async with platform.make_device_repository(discovery.integration) as repo:
-        await repo.save(
-            Device(
-                id=discovery.id,
-                name=name,
-                room_id=room,
-                transport=discovery.transport,
-                integration=discovery.integration,
-                manufacturer=discovery.device_manufacturer,
-            )
-        )
+_forms: dict[UUID, ESPhomeDeviceState] = {}
+
+
+def user_picks(discovery: Discovery, name: str = "Kitchen relay", room: UUID = ROOM):
+    """What the user fills in when picking a discovery: the Hub builds the pairing draft from it."""
+    _forms[discovery.id] = draft_of(discovery, name, room)
+
+
+def draft_of(discovery: Discovery, name: str = "Kitchen relay", room: UUID = ROOM) -> ESPhomeDeviceState:
+    return ESPhomeDeviceState(
+        id=uuid4(),
+        physical_id=discovery.id,
+        name=name,
+        room_id=room,
+        transport=discovery.transport,
+        integration=discovery.integration,
+        manufacturer=discovery.device_manufacturer,
+        parameters=[],
+    )
+
+
+async def hub_pairs(
+    controller: ESPhomeController,
+    discovery: Discovery,
+    credentials: ProvidedCredentials | None = None,
+    draft: ESPhomeDeviceState | None = None,
+) -> UUID:
+    """What the Hub does (`DeviceProvider`): pair into a draft, roll back with `unpair` on a failure, else save the
+    device, report it connected and fetch it."""
+    draft = draft or _forms.get(discovery.id, draft_of(discovery)).model_copy(deep=True)
+    try:
+        device = await controller.pair_device(discovery, draft, credentials)
+    except DeviceIdTakenError:
+        raise
+    except BaseException:
+        await controller.unpair(draft)
+        raise
+    async with controller.platform.device_repository(controller) as repo:
+        await repo.save(ESPhomeDevice.model_validate(device.model_dump()))
+    if device.available:
+        await controller.output.controller_did_connect_device(controller, physical_id=device.physical_id)
+    with contextlib.suppress(Exception):
+        await controller.fetch(ESPhomeDevice.model_validate(device.model_dump()))
+    return device.physical_id
 
 
 async def wait_until(predicate: Callable[[], Any], timeout: float = 10.0, message: str = "condition"):
@@ -121,13 +152,14 @@ def leaked_tasks() -> list[asyncio.Task[Any]]:
     return leaked
 
 
-async def assert_not_paired(platform: Platform, device_id: UUID, kept_key: bool = False):
-    """A failed pairing leaves the device as the Hub created it: no parameters, no connection data, except (`kept_key`)
-    the key the integration already set on the node, kept so the node is not locked out of the next attempt."""
+async def assert_not_paired(platform: Platform, device_id: UUID):
+    """A failed pairing leaves no device (the Hub saves only what pairing returned) and nothing kept on the side."""
     async with platform.make_device_repository(ESPhomeController.slug()) as repo:
-        device = await repo.get(device_id, as_=ESPhomeDevice)
-    assert device is not None, "the device the Hub created must not be deleted by the integration"
-    assert device.parameters == []
-    assert bool(device.integration_data.encryption_key) == kept_key
-    assert device.integration_data.model_copy(update={"encryption_key": None}) == ESPhomeDeviceIntegrationData()
-    assert not device.available
+        assert await repo.get(physical_id=device_id) is None
+    assert_no_side_storage(platform)
+
+
+def assert_no_side_storage(platform: Platform):
+    """Whatever the integration keeps about a device lives in its record (`integration_data`), never in a file."""
+    folder = platform.documents_root / ESPhomeController.slug()
+    assert not folder.exists() or not any(folder.iterdir())

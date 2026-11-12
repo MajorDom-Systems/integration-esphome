@@ -33,7 +33,7 @@ async def test_controller_stops_listening_on_stop(controller: ESPhomeController,
 async def test_discovery_id_is_the_sdk_hardware_identity(controller: ESPhomeController, mdns: FakeMDNS):
     await mdns.announce(Advert(mac=MAC))
 
-    assert list(controller.discoveries) == [controller.device_uuid(MAC)]
+    assert list(controller.discoveries) == [controller.device_uuid(bytes.fromhex(MAC))]
 
 
 async def test_discovery_is_named_after_the_node_not_its_mdns_record(controller: ESPhomeController, mdns: FakeMDNS):

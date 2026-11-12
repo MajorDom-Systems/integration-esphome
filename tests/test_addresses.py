@@ -8,7 +8,7 @@ from majordom_integration_sdk.testing import RecordingControllerOutput
 
 from majordom_esphome.controller import ESPhomeController
 from majordom_esphome.models import ESPhomeDevice
-from tests.helpers import hub_creates_device, param, wait_for_value, wait_until
+from tests.helpers import hub_pairs, param, user_picks, wait_for_value, wait_until
 from tests.virtual.mdns import Advert, FakeMDNS
 from tests.virtual.runner import VirtualDevice
 
@@ -16,14 +16,14 @@ from tests.virtual.runner import VirtualDevice
 async def pair(controller: ESPhomeController, mdns: FakeMDNS, advert: Advert) -> ESPhomeDevice:
     await mdns.announce(advert)
     (discovery,) = controller.discoveries.values()
-    await hub_creates_device(controller.platform, discovery)
-    await controller.pair_device(discovery, credentials=None)
+    user_picks(discovery)
+    await hub_pairs(controller, discovery, credentials=None)
     return await stored(controller, discovery.id)
 
 
 async def stored(controller: ESPhomeController, device_id) -> ESPhomeDevice:
     async with controller.platform.device_repository(controller) as repo:
-        device = await repo.get(device_id, as_=ESPhomeDevice)
+        device = await repo.get(physical_id=device_id, as_=ESPhomeDevice)
     assert device is not None
     return device
 
@@ -51,8 +51,8 @@ async def test_pairing_uses_the_latest_announcement(
     await mdns.announce(Advert(port=device.port, server=None, addresses=["127.0.0.1"]))  # DHCP moved it
 
     (discovery,) = controller.discoveries.values()
-    await hub_creates_device(controller.platform, discovery)
-    await controller.pair_device(discovery, credentials=None)
+    user_picks(discovery)
+    await hub_pairs(controller, discovery, credentials=None)
 
     assert (await stored(controller, discovery.id)).integration_data.addresses == ["127.0.0.1"]
 
@@ -70,14 +70,14 @@ async def test_address_changes_are_followed_while_paired(
 
     # DHCP hands the node a new address: mDNS announces it, the old one is forgotten, the new one is tried first
     await mdns.announce(Advert(port=device.port, server="localhost.", addresses=["::1"]))
-    assert (await stored(controller, paired.id)).integration_data.addresses == ["::1", "localhost"]
+    assert (await stored(controller, paired.physical_id)).integration_data.addresses == ["::1", "localhost"]
 
     # the next connection (the node reboots) tries `::1`, fails, and then remembers the hostname that worked
     output.connected_devices.clear()
     await device.restart()
-    await wait_until(lambda: paired.id in output.connected_devices, 40, "the device to reconnect")
+    await wait_until(lambda: paired.physical_id in output.connected_devices, 40, "the device to reconnect")
     await wait_for_value(output, param(paired, "Temperature"))
-    assert (await stored(controller, paired.id)).integration_data.addresses == ["localhost", "::1"]
+    assert (await stored(controller, paired.physical_id)).integration_data.addresses == ["localhost", "::1"]
 
 
 async def test_announcement_of_a_paired_node_without_changes_leaves_addresses_alone(
@@ -88,4 +88,6 @@ async def test_announcement_of_a_paired_node_without_changes_leaves_addresses_al
 
     await mdns.announce(advert)
 
-    assert (await stored(controller, paired.id)).integration_data.addresses == paired.integration_data.addresses
+    assert (
+        await stored(controller, paired.physical_id)
+    ).integration_data.addresses == paired.integration_data.addresses

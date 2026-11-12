@@ -18,7 +18,7 @@ from majordom_integration_sdk.schemas.parameter import ParameterDataType, Parame
 from majordom_esphome import generic, mapper
 from majordom_esphome.controller import ESPhomeController
 from majordom_esphome.models import ESPhomeDevice, ESPhomeParameter
-from tests.helpers import assert_values_match_parameters, hub_creates_device
+from tests.helpers import assert_values_match_parameters, hub_pairs, user_picks
 from tests.virtual import catalogue
 from tests.virtual.mdns import Advert, FakeMDNS
 from tests.virtual.runner import VirtualDevice
@@ -93,12 +93,12 @@ async def test_every_entity_kind_works_end_to_end(
     try:
         await mdns.announce(Advert(name=sketch.name, mac=sketch.mac, port=sketch.port))
         (discovery,) = controller.discoveries.values()
-        await hub_creates_device(controller.platform, discovery)
+        user_picks(discovery)
 
-        await controller.pair_device(discovery, credentials=None)
+        await hub_pairs(controller, discovery, credentials=None)
 
         async with controller.platform.device_repository(controller) as repo:
-            device = await repo.get(discovery.id, as_=ESPhomeDevice)
+            device = await repo.get(physical_id=discovery.id, as_=ESPhomeDevice)
         assert device is not None
         assert {p.integration_data.component_type for p in device.parameters} <= {kind}
         assert len({p.id for p in device.parameters}) == len(device.parameters)
