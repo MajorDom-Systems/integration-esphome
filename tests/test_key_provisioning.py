@@ -24,7 +24,7 @@ from aioesphomeapi import (
     EntityInfo,
     InvalidEncryptionKeyAPIError,
 )
-from majordom_integration_sdk import Platform
+from majordom_integration_sdk import DeviceUnreachableError, Platform
 from majordom_integration_sdk.schemas import CredentialsType, ProvidedCredentials
 from majordom_integration_sdk.schemas.device import Discovery
 from majordom_integration_sdk.testing import RecordingControllerOutput, build_test_platform
@@ -313,6 +313,22 @@ async def test_a_pairing_failing_after_the_key_is_set_is_rolled_back_by_a_factor
     reset = await discover(controller, mdns, Advert(keyless=True, addresses=["127.0.0.2"]))  # announced anew
     await hub_pairs(controller, reset, credentials=None)
     assert node.set_key_sessions == [ZERO_NOISE_PSK, ZERO_NOISE_PSK]
+
+
+async def test_rolling_back_a_keyed_node_it_cant_reach_reports_it_unreachable(
+    controller: ESPhomeController, mdns: FakeMDNS, node: FakeNode
+):
+    node.fails_listing, node.reachable_with_key = 2, False
+    found = await discover(controller, mdns, Advert(keyless=True))
+    user_picks(found)
+    draft = draft_of(found)
+
+    with pytest.raises(ConnectionError):
+        await controller.pair_device(found, draft, None)
+    with pytest.raises(DeviceUnreachableError):
+        await controller.unpair(draft)
+
+    assert (node.resets, controller._given_keys) == (0, set())
 
 
 async def test_a_pairing_the_hub_fails_to_save_is_rolled_back_by_a_factory_reset(

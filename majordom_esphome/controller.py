@@ -16,6 +16,7 @@ from aioesphomeapi import ZERO_NOISE_PSK, APIClient, ButtonInfo, EntityInfo, Ent
 from majordom_integration_sdk import (
     AbstractController,
     DeviceIdTakenError,
+    DeviceUnreachableError,
     MissingCredentialsError,
     Need,
     PeripheralChange,
@@ -43,7 +44,7 @@ from pydantic import BaseModel, Field
 
 from . import improv, mapper, thread_provisioning
 from .bluetooth import ble_source_of
-from .connection import ESPhomeDeviceConnection, describe_error
+from .connection import ESPhomeDeviceConnection, KeyRefusedError, describe_error
 from .models import (
     ESPhomeDevice,
     ESPhomeDeviceIntegrationData,
@@ -220,13 +221,16 @@ class ESPhomeController(
         self._states.pop(device.physical_id, None)
         self._paired.discard(device.physical_id)
         live = connection or (paired.connection if paired else None)
-        if live is not None and live.ready:
+        reached = live is not None and live.ready
+        if reached:
             await self._factory_reset(device.physical_id, live)
         elif given_key:  # the failed pairing already dropped its connection
-            await self._factory_reset_anew(device)
+            reached = await self._factory_reset_anew(device)
         for conn in (paired.connection if paired else None, connection):
             if conn is not None:
                 await conn.stop()
+        if not reached and (given_key or isinstance(device, ESPhomeDevice) and device.integration_data.encryption_key):
+            raise DeviceUnreachableError(f"{device.physical_id} is unreachable to factory reset")
         # The Hub removes the device record after unpair; the repository protocol
         # intentionally does not expose delete() to integrations.
 
@@ -510,9 +514,9 @@ class ESPhomeController(
             return
         await self._update_device(device_id, available=available, last_error=None if available else reason)
         if available:
-            await self.output.controller_did_connect_device(self, device_id)
+            await self.output.controller_did_connect_device(self, physical_id=device_id)
         else:
-            await self.output.controller_did_lose_device(self, device_id)
+            await self.output.controller_did_lose_device(self, physical_id=device_id)
 
     async def _on_client(self, device_id: UUID, client: APIClient | None):
         """A paired node connected: lend its Bluetooth radio, if it has one to lend, as a ``ble/esphome-proxy`` the
@@ -880,19 +884,26 @@ class ESPhomeController(
         key = draft.integration_data.encryption_key or base64.b64encode(secrets.token_bytes(32)).decode()
         draft.integration_data.encryption_key = key
         self._given_keys.add(draft.physical_id)
-        await conn.provision_key(key, ZERO_NOISE_PSK if data.zero_psk else None)
+        try:
+            await conn.provision_key(key, ZERO_NOISE_PSK if data.zero_psk else None)
+        except KeyRefusedError:  # it stays keyless: nothing to undo
+            self._given_keys.discard(draft.physical_id)
+            raise
         data.keyless = False  # whatever mDNS still announces, the node requires the key now
 
-    async def _factory_reset_anew(self, device: ESPhomeDevice | ESPhomeDeviceState):
-        """Reach the node with the key of a draft whose pairing dropped its connection, to factory reset it."""
+    async def _factory_reset_anew(self, device: ESPhomeDevice | ESPhomeDeviceState) -> bool:
+        """Reach the node with the key of a draft whose pairing dropped its connection, to factory reset it; whether
+        it was reached."""
         data = device.integration_data
         conn = self._make_connection(device.physical_id, data.addresses, data.port, data.encryption_key)
         try:
             await conn.start()
             await conn.wait_ready(FACTORY_RESET_TIMEOUT)
             await self._factory_reset(device.physical_id, conn)
+            return True
         except Exception as exc:
             logger.debug(f"Could not reach {device.physical_id} to factory reset it: {exc}")
+            return False
         finally:
             await conn.stop()
 

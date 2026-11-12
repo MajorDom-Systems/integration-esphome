@@ -59,7 +59,7 @@ async def hub_pairs(
     async with controller.platform.device_repository(controller) as repo:
         await repo.save(ESPhomeDevice.model_validate(device.model_dump()))
     if device.available:
-        await controller.output.controller_did_connect_device(controller, device.physical_id)
+        await controller.output.controller_did_connect_device(controller, physical_id=device.physical_id)
     with contextlib.suppress(Exception):
         await controller.fetch(ESPhomeDevice.model_validate(device.model_dump()))
     return device.physical_id
