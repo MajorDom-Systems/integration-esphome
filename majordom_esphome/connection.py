@@ -46,7 +46,7 @@ def describe_error(exc: BaseException) -> str:
     if isinstance(exc, KeyRefusedError):
         return "The device refused the new encryption key"
     if isinstance(exc, RequiresEncryptionAPIError):
-        return "The device requires an encryption key"
+        return "The device requires an encryption key: enter it, or factory reset the device"
     if isinstance(exc, InvalidEncryptionKeyAPIError):
         return "The device rejected the encryption key"
     if isinstance(exc, TimeoutError):
