@@ -46,6 +46,7 @@ __all__ = [
 AUTHORIZATION_TIMEOUT = 60.0  # for the user to press the node's button
 PROVISION_TIMEOUT = 90.0  # from giving the node the Wi-Fi to its answer
 LEASE_TIMEOUT = 30.0  # for a radio that hears the node to free up
+CONNECT_TIMEOUT = 30.0  # for the node to answer: one just reset or flashed takes BlueZ well over the SDK's 10 s
 BLE_NAME_LENGTH = 20  # ESPHome cuts the name it advertises to this, keeping a `-xxxxxx` MAC suffix
 OWNER = "esphome-improv"
 NOTIFYING = (CHARACTERISTIC_UUID_STATE, CHARACTERISTIC_UUID_ERROR, CHARACTERISTIC_UUID_RPC_RESULT)
@@ -80,7 +81,7 @@ async def secured_connection(
             ble.exclusive(
                 address, owner=owner, busy_timeout=lease_timeout, is_pairing_needed=channel.is_pairing_needed
             ) as lease,
-            lease.connect() as connection,
+            lease.connect(busy_timeout=CONNECT_TIMEOUT) as connection,
             channel.secure(connection) as secured,
         ):
             yield secured
