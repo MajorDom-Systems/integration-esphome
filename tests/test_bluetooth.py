@@ -15,9 +15,16 @@ from aioesphomeapi import (
     BluetoothProxyFeature,
     DeviceInfo,
 )
-from aioesphomeapi.model import APIVersion, BluetoothGATTService, ESPHomeBluetoothGATTServices
+from aioesphomeapi.model import (
+    APIVersion,
+    BluetoothDevicePairing,
+    BluetoothDeviceUnpairing,
+    BluetoothGATTService,
+    ESPHomeBluetoothGATTServices,
+)
 from majordom_integration_sdk import Endpoint, Platform
-from majordom_integration_sdk.capabilities import BLEDiscoveryInfo, BLERouter
+from majordom_integration_sdk.capabilities import BLEDiscoveryInfo, BLEPairingError, BLERouter, PairableBLEConnection
+from majordom_integration_sdk.capabilities.ble_security import LESecureConnections
 from majordom_integration_sdk.peripherals import BLEProxy, Peripherals
 from majordom_integration_sdk.repository.memory import DeviceRepositoryMemory
 from majordom_integration_sdk.runtime import PeripheralState, Runtime
@@ -40,6 +47,7 @@ PROXY = (
     | BluetoothProxyFeature.RAW_ADVERTISEMENTS
 )
 MATTER = "0000fff6-0000-1000-8000-00805f9b34fb"
+PAIRING = BluetoothProxyFeature.PAIRING
 DEVICE = 0xAABBCCDDEEFF
 MATTER_ADV = bytes.fromhex("0b16f6ff00000fa1f7ff0180")  # service data: a commissionable Matter device
 NAME = bytes.fromhex("0509") + b"Bulb"  # scan response: complete local name
@@ -72,6 +80,10 @@ class FakeAPIClient:
         self.on_state: Callable[[bool, int, int], None] | None = None  # of the device it connected to
         self.notifying: set[int] = set()
         self.disconnects: list[int] = []
+        self.pairing = (True, 0)  # paired, error: what the node answers a pair request
+        self.unpairing = (True, 0)  # success, error
+        self.pairs: list[int] = []
+        self.unpairs: list[int] = []
 
     async def device_info(self) -> DeviceInfo:
         if self.device_info_error:
@@ -139,6 +151,14 @@ class FakeAPIClient:
             self.on_state = None
 
         return unsubscribe
+
+    async def bluetooth_device_pair(self, address: int) -> BluetoothDevicePairing:
+        self.pairs.append(address)
+        return BluetoothDevicePairing(address, *self.pairing)  # ty: ignore[too-many-positional-arguments]
+
+    async def bluetooth_device_unpair(self, address: int) -> BluetoothDeviceUnpairing:
+        self.unpairs.append(address)
+        return BluetoothDeviceUnpairing(address, *self.unpairing)  # ty: ignore[too-many-positional-arguments]
 
     async def bluetooth_gatt_get_services(self, address: int) -> ESPHomeBluetoothGATTServices:
         cccd = {"uuid": "00002902-0000-1000-8000-00805f9b34fb", "handle": 6}
@@ -343,6 +363,47 @@ async def test_a_refused_connection_is_an_error(ble_and_node: tuple[BLEService, 
     client.advertise(MATTER_ADV)
     with pytest.raises(ConnectionError, match="error 133"):
         await ble.connect("AA:BB:CC:DD:EE:FF")
+
+
+async def test_only_a_node_whose_proxy_pairs_can_encrypt_a_link():
+    listening, pairing = await source_of(FakeAPIClient()), await source_of(FakeAPIClient(features=PROXY | PAIRING))
+    assert listening and pairing
+    assert (listening.is_pairable, pairing.is_pairable) == (False, True)
+
+
+async def test_a_connection_pairs_through_the_node_and_reports_a_refusal():
+    client = FakeAPIClient(features=PROXY | PAIRING)
+    source = await source_of(client)
+    assert source
+    await source.start(lambda device, adv: None)
+    client.advertise(MATTER_ADV)
+    connection = await source.connect("AA:BB:CC:DD:EE:FF", lambda: None)
+    assert isinstance(connection, PairableBLEConnection)
+
+    await connection.pair()
+    await connection.unpair()
+    assert (client.pairs, client.unpairs) == ([DEVICE], [DEVICE])
+
+    client.pairing = (False, 5)  # GATT_INSUF_AUTHENTICATION
+    with pytest.raises(BLEPairingError, match="error 5"):
+        await connection.pair()
+
+    client.unpairing = (False, 133)
+    with pytest.raises(BLEPairingError, match="error 133"):
+        await connection.unpair()
+
+
+async def test_a_secure_connections_block_pairs_through_the_node_and_unpairs_when_it_ends():
+    client = FakeAPIClient(features=PROXY | PAIRING)
+    source = await source_of(client)
+    assert source
+    await source.start(lambda device, adv: None)
+    client.advertise(MATTER_ADV)
+    connection = await source.connect("AA:BB:CC:DD:EE:FF", lambda: None)
+
+    async with LESecureConnections().secure(connection) as secured:
+        assert (secured, client.pairs, client.unpairs) == (connection, [DEVICE], [])
+    assert client.unpairs == [DEVICE]
 
 
 async def test_a_leased_node_stays_subscribed_but_mutes_its_advertisements(
