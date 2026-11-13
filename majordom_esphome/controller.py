@@ -8,7 +8,7 @@ import functools
 import logging
 import secrets
 from collections.abc import Awaitable, Callable, Coroutine
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
@@ -102,7 +102,7 @@ class ESPhomeController(
     needs = [
         ZEROCONF,
         Need("thread", ["otbr-rest"], is_required=False),
-        replace(BLE_ROUTER, is_required=False),
+        BLE_ROUTER(is_required=False),
     ]
 
     class Settings(BaseModel):

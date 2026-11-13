@@ -76,16 +76,14 @@ async def secured_connection(
     Bluetooth failures become `SetupError`s."""
     channel = channel or LESecureConnections()
     try:
-        async with ble.exclusive(
-            address, owner=owner, timeout=lease_timeout, is_pairing_needed=channel.is_pairing_needed
-        ) as lease:
-            connection = await lease.connect()
-            try:
-                async with channel.secure(connection) as secured:
-                    yield secured
-            finally:
-                with contextlib.suppress(Exception):
-                    await connection.disconnect()
+        async with (
+            ble.exclusive(
+                address, owner=owner, busy_timeout=lease_timeout, is_pairing_needed=channel.is_pairing_needed
+            ) as lease,
+            lease.connect() as connection,
+            channel.secure(connection) as secured,
+        ):
+            yield secured
     except BLEPairingError as exc:
         raise EncryptionError(NOT_ENCRYPTED) from exc
     except BLEBusyError as exc:
