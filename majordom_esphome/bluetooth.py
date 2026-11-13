@@ -5,6 +5,7 @@ A node serves one API connection at a time (the newest subscriber wins), so it c
 and another one together.
 """
 
+import asyncio
 import contextlib
 from collections.abc import Awaitable, Callable
 
@@ -91,6 +92,7 @@ class ESPhomeBLESource:
         # its loss shows through the node's API connection: the router never resubscribes it for hearing no one
         self.is_loss_reported = True
         self._heard: dict[str, tuple[AdvertisementData, int]] = {}  # address -> merged advertisement, address type
+        self._connect_lock = asyncio.Lock()  # the node handles one connection attempt at a time
 
     async def start(self, on_advertisement: OnAdvertisement):
         def on_advertisements(response: BluetoothLERawAdvertisementsResponse):
@@ -143,6 +145,8 @@ class ESPhomeBLESource:
     async def connect(self, address: str, on_disconnect: Callable[[], None]) -> ESPhomeBLEConnection:
         if self._features & _CONNECTS != _CONNECTS:
             raise ConnectionError(f"{self.name} only listens")
+        if (heard := self._heard.get(address)) is None:  # guessing public for a random address never connects
+            raise ConnectionError(f"{self.name} hasn't heard {address} lately: its address type is unknown")
         handle = int(address.replace(":", ""), 16)
         states: list[tuple[bool, int, int]] = []
 
@@ -151,9 +155,10 @@ class ESPhomeBLESource:
             if len(states) > 1 and not connected:
                 on_disconnect()
 
-        unsubscribe = await self._client.bluetooth_device_connect(
-            handle, on_state, feature_flags=self._features, address_type=self._heard.get(address, (None, 0))[1]
-        )  # returns once the proxy answered: connected or not
+        async with self._connect_lock:
+            unsubscribe = await self._client.bluetooth_device_connect(
+                handle, on_state, feature_flags=self._features, address_type=heard[1]
+            )  # returns once the proxy answered: connected or not
         connected, mtu, error = states[0]
         if not connected:
             unsubscribe()
