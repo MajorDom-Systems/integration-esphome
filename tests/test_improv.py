@@ -778,7 +778,9 @@ async def test_the_setup_code_authorizes_the_hub_and_seals_the_wifi_password(
 ):
     joins_as_keyless_device(node, mdns)
 
-    assert await hub_pairs(controller, coded_discovery, SETUP_CODE) == controller.device_uuid(KEYLESS.mac)
+    assert await hub_pairs(controller, coded_discovery, SETUP_CODE) == controller.device_uuid(
+        bytes.fromhex(KEYLESS.mac)
+    )
 
     assert node.received == [HOME]
     assert not any(HOME.password.encode() in write for write in node.writes), "the password crossed in clear text"
