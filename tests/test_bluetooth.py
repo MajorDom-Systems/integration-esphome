@@ -708,6 +708,20 @@ async def test_turning_the_proxies_off_restarts_it_and_takes_every_radio_back(
     assert sources(ble) == [] and proxies(runtime) == []
 
 
+async def test_allowing_unencrypted_setup_applies_without_a_restart(
+    runtime: Runtime, esphome: ESPhomeController, mdns: FakeMDNS, nodes: Nodes, ble: BLEService
+):
+    await pair(esphome, mdns, "kitchen")
+    await wait_until(lambda: sources(ble) == [lent("kitchen")], message="the node to be lent")
+    first = nodes.connection_of("kitchen")
+
+    await runtime.update_settings(esphome, {"is_unencrypted_provisioning_allowed": True})
+
+    await asyncio.sleep(0.05)
+    assert esphome.settings.is_unencrypted_provisioning_allowed
+    assert nodes.connection_of("kitchen") is first and sources(ble) == [lent("kitchen")]
+
+
 async def test_unpairing_a_node_takes_back_only_its_radio(
     esphome: ESPhomeController, mdns: FakeMDNS, nodes: Nodes, ble: BLEService
 ):

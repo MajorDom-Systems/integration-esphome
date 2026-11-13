@@ -161,6 +161,10 @@ class ESPhomeController(
 
     # Lifecycle
 
+    async def settings_did_change(self, before: ESPhomeController.Settings) -> bool:
+        # the unencrypted setup setting is read when a node is set up; lending the radios is decided per connection
+        return self.settings.is_bluetooth_proxy_enabled == before.is_bluetooth_proxy_enabled
+
     async def start(self):
         logger.info("Starting ESPHome integration")
         self._run = object()
