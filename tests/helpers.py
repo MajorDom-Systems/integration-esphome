@@ -7,6 +7,7 @@ from collections.abc import Callable
 from typing import Any
 from uuid import UUID, uuid4
 
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from majordom_integration_sdk import DeviceIdTakenError, Platform
 from majordom_integration_sdk.capabilities import BLEPairingError
 from majordom_integration_sdk.schemas import DeviceParameterChange, ProvidedCredentials
@@ -14,8 +15,10 @@ from majordom_integration_sdk.schemas.device import Discovery
 from majordom_integration_sdk.schemas.parameter import ParameterDataType
 from majordom_integration_sdk.testing import RecordingControllerOutput
 
+from majordom_esphome import setup_code
 from majordom_esphome.controller import ESPhomeController
 from majordom_esphome.models import ESPhomeDevice, ESPhomeDeviceState, ESPhomeParameter
+from majordom_esphome.setup_code import COMMAND_ENCRYPTED, ORDER, G, M, N, context, decode, derive, encode, frame, mul
 
 ROOM = UUID(int=42)
 
@@ -90,6 +93,55 @@ class FakeEncryptedLink:
         self.unencrypted_writes.append(data)
         if self.requires_encryption:
             raise ConnectionError("ATT error 0x0f: insufficient encryption")
+
+
+class FakeVerifier:
+    """A device's side of setup code authentication (Improv revision 2.5), keeping only the verifier of code 2020-2021:
+    `answer` gives a handshake command's result frame or error, and opens an Encrypted RPC into its inner command."""
+
+    SALT = b"SPAKE2P Key Salt"
+
+    def __init__(self, iterations: int = 1000, error_on_begin: int | None = None):
+        w0, w1 = derive(20202021, self.SALT, iterations)
+        self.w0, self.L, self.iterations, self.error_on_begin = w0, mul(w1, G), iterations, error_on_begin
+        self.keys: tuple[AESGCM, AESGCM] | None = None  # client-to-device, device-to-client: once confirmed
+        self._confirm_p = self._shared = b""
+        self._sent = 0
+
+    def answer(self, command: int, data: bytes) -> tuple[bytes | None, int | None, bytes | None]:
+        """(result frame, error, inner command) for a command frame's ``command`` and ``data``."""
+        if command == 0x08 and self.error_on_begin:
+            return None, self.error_on_begin, None
+        if command == 0x08:
+            return self._result(0x08, self.SALT, self.iterations.to_bytes(4, "little")), None, None
+        if command == 0x09:
+            y = int("22" * 32, 16)
+            share_v = encode(setup_code._add(mul(y, G), mul(self.w0, N)))
+            unblinded = setup_code._add(decode(data), mul(ORDER - self.w0, M))
+            z, v = encode(mul(y, unblinded)), encode(mul(y, self.L))
+            ids = context(self.SALT, self.iterations), b"", b""
+            keys = setup_code.key_schedule(*ids, data, share_v, z, v, self.w0.to_bytes(32))
+            self._confirm_p, self._shared = keys.confirm_p, keys.shared
+            return self._result(0x09, share_v, keys.confirm_v), None, None
+        if command == 0x0A and data == self._confirm_p:
+            self.keys = AESGCM(self._shared[:16]), AESGCM(self._shared[16:])
+            return self._result(0x0A), None, None
+        if command == COMMAND_ENCRYPTED and self.keys:
+            return None, None, self.keys[0].decrypt(data[:4] + bytes(8), data[4:], b"\x0b\x00")
+        return None, setup_code.ERROR_AUTHENTICATION_FAILED, None
+
+    def seal(self, inner_result: bytes) -> bytes:
+        """The Encrypted RPC result frame for an inner result (command, length, entries)."""
+        assert self.keys
+        counter = self._sent.to_bytes(4, "little")
+        self._sent += 1
+        return self._result(
+            COMMAND_ENCRYPTED, counter + self.keys[1].encrypt(counter + bytes(8), inner_result, b"\x0b\x01")
+        )
+
+    @staticmethod
+    def _result(command: int, *items: bytes) -> bytes:
+        return frame(command, b"".join(bytes([len(item)]) + item for item in items))
 
 
 async def wait_until(predicate: Callable[[], Any], timeout: float = 10.0, message: str = "condition"):

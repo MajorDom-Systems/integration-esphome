@@ -5,6 +5,7 @@ the border router) like any other node.
 The node side is the `thread_provisioning` external component (ESPHome has no runtime dataset provisioning of its own):
 an Improv-style GATT service, advertised while the node has no Thread network. Its frames are Improv's: command,
 length, data, then a checksum (the sum of the previous bytes); a command is written in chunks that fit the connection.
+Like Improv revision 2.5, a node built with a `setup_code` authenticates the Hub with it first: see `setup_code`.
 """
 
 import asyncio
@@ -15,14 +16,17 @@ from bleak.backends.scanner import AdvertisementData
 from majordom_integration_sdk.capabilities import BLEConnection, BLERouter, SecureChannel
 
 from .improv import PRESS_BUTTON, SetupError, secured_connection
+from .setup_code import RpcService
 
-__all__ = ["SERVICE_UUID", "provision", "waits_for_thread"]
+__all__ = ["RPC_SERVICE", "SERVICE_UUID", "provision", "waits_for_thread"]
 
 SERVICE_UUID = "aeb52169-9cc0-4883-8ee7-e3d075fbe600"
 STATE_UUID = "aeb52169-9cc0-4883-8ee7-e3d075fbe601"
 ERROR_UUID = "aeb52169-9cc0-4883-8ee7-e3d075fbe602"
 RPC_UUID = "aeb52169-9cc0-4883-8ee7-e3d075fbe603"
 RESULT_UUID = "aeb52169-9cc0-4883-8ee7-e3d075fbe604"
+CAPABILITIES_UUID = "aeb52169-9cc0-4883-8ee7-e3d075fbe605"
+RPC_SERVICE = RpcService(SERVICE_UUID, RPC_UUID, RESULT_UUID, ERROR_UUID, CAPABILITIES_UUID)
 SET_DATASET = 0x01
 
 AUTHORIZATION_TIMEOUT = 60.0  # for the user to press the node's button
@@ -47,6 +51,8 @@ class Error(IntEnum):
     UNABLE_TO_ATTACH = 0x03
     NOT_AUTHORIZED = 0x04
     INVALID_DATASET = 0x05
+    AUTHENTICATION_FAILED = 0x06
+    TOO_MANY_ATTEMPTS = 0x07
     UNKNOWN = 0xFF
 
 
