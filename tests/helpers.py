@@ -8,6 +8,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from majordom_integration_sdk import DeviceIdTakenError, Platform
+from majordom_integration_sdk.capabilities import BLEPairingError
 from majordom_integration_sdk.schemas import DeviceParameterChange, ProvidedCredentials
 from majordom_integration_sdk.schemas.device import Discovery
 from majordom_integration_sdk.schemas.parameter import ParameterDataType
@@ -63,6 +64,32 @@ async def hub_pairs(
     with contextlib.suppress(Exception):
         await controller.fetch(ESPhomeDevice.model_validate(device.model_dump()))
     return device.physical_id
+
+
+class FakeEncryptedLink:
+    """The link side of a node built with `ble_link_security`: it pairs (LE Secure Connections), and its credential
+    characteristic refuses a write over a link that isn't encrypted, as the stack does (ATT Insufficient Encryption)."""
+
+    def __init__(self):
+        self.paired = self.unpaired = False
+        self.accepts_pairing = True
+        self.requires_encryption = True  # False: firmware without ble_link_security
+        self.unencrypted_writes: list[bytes] = []  # what crossed the air in clear text
+
+    async def pair(self):
+        if not self.accepts_pairing:
+            raise BLEPairingError("Pairing failed: org.bluez.Error.AuthenticationFailed")
+        self.paired = True
+
+    async def unpair(self):
+        self.paired, self.unpaired = False, True
+
+    def check_encrypted(self, data: bytes):
+        if self.paired:
+            return
+        self.unencrypted_writes.append(data)
+        if self.requires_encryption:
+            raise ConnectionError("ATT error 0x0f: insufficient encryption")
 
 
 async def wait_until(predicate: Callable[[], Any], timeout: float = 10.0, message: str = "condition"):

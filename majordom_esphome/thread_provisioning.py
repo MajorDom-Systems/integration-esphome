@@ -8,16 +8,13 @@ length, data, then a checksum (the sum of the previous bytes); a command is writ
 """
 
 import asyncio
-import contextlib
 from collections.abc import Awaitable, Callable
 from enum import IntEnum
 
-from aioesphomeapi import APIConnectionError
 from bleak.backends.scanner import AdvertisementData
-from bleak.exc import BleakError
-from majordom_integration_sdk.capabilities import BLEBusyError, BLEConnection, BLERouter
+from majordom_integration_sdk.capabilities import BLEConnection, BLERouter, SecureChannel
 
-from .improv import BUSY, NO_ANSWER, PRESS_BUTTON, SetupError
+from .improv import PRESS_BUTTON, SetupError, secured_connection
 
 __all__ = ["SERVICE_UUID", "provision", "waits_for_thread"]
 
@@ -68,23 +65,12 @@ async def provision(
     address: str,
     dataset: bytes,
     on_authorization_required: Callable[[], Awaitable[None]],
+    channel: SecureChannel | None = None,
 ):
-    """Give the node the Thread network; returns once it has attached to it. The radio that hears the node best is held
-    for the whole exchange. Raises `SetupError`."""
-    try:
-        async with ble.exclusive(address, owner=OWNER, timeout=LEASE_TIMEOUT) as lease:
-            connection = await lease.connect()
-            try:
-                await _provision(connection, dataset, on_authorization_required)
-            finally:
-                with contextlib.suppress(Exception):
-                    await connection.disconnect()
-    except BLEBusyError as exc:
-        raise SetupError(BUSY) from exc
-    # BleakError and APIConnectionError: what a local adapter's and an ESPHome node's connections raise, until the SDK
-    # normalises them
-    except (ConnectionError, TimeoutError, LookupError, ValueError, BleakError, APIConnectionError) as exc:
-        raise SetupError(NO_ANSWER) from exc
+    """Give the node the Thread network; returns once it has attached to it. Raises `SetupError`, `EncryptionError`
+    when the link could not be secured: the dataset holds the network key."""
+    async with secured_connection(ble, address, OWNER, LEASE_TIMEOUT, channel) as connection:
+        await _provision(connection, dataset, on_authorization_required)
 
 
 async def _provision(

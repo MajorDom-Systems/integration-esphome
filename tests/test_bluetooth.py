@@ -272,17 +272,18 @@ async def test_connects_and_speaks_gatt_by_handle(ble_and_node: tuple[BLEService
     client.advertise(MATTER_ADV)
     await asyncio.sleep(0.01)
 
-    connection = await ble.connect("AA:BB:CC:DD:EE:FF")
-    assert client.connected == (DEVICE, 1) and connection.mtu == 247
-    services = await connection.services()
-    assert [(c.uuid, c.properties) for c in services[0].characteristics] == [("c1", ("write",)), ("c2", ("indicate",))]
+    async with ble.connect("AA:BB:CC:DD:EE:FF") as connection:
+        assert client.connected == (DEVICE, 1) and connection.mtu == 247
+        services = await connection.services()
+        characteristics = [(c.uuid, c.properties) for c in services[0].characteristics]
+        assert characteristics == [("c1", ("write",)), ("c2", ("indicate",))]
 
-    await connection.write(3, b"hs")
-    notes = []
-    await connection.start_notify(5, notes.append)
-    assert client.on_notify
-    client.on_notify(5, bytearray(b"ok"))
-    assert client.writes == [(3, b"hs")] and client.descriptors == [(6, b"\x02\x00")] and notes == [b"ok"]
+        await connection.write(3, b"hs")
+        notes = []
+        await connection.start_notify(5, notes.append)
+        assert client.on_notify
+        client.on_notify(5, bytearray(b"ok"))
+        assert client.writes == [(3, b"hs")] and client.descriptors == [(6, b"\x02\x00")] and notes == [b"ok"]
 
 
 async def test_a_closed_connection_leaves_no_notify_handler_on_the_node():
@@ -324,13 +325,11 @@ async def test_a_proxied_connection_reads_stops_notifying_and_disconnects(
     ble, client = ble_and_node
     client.advertise(MATTER_ADV)
     await asyncio.sleep(0.01)
-    connection = await ble.connect("AA:BB:CC:DD:EE:FF")
-
-    assert await connection.read(3) == b"value"
-    await connection.start_notify(5, lambda data: None)
-    await connection.stop_notify(5)
-    assert client.notifying == set()
-    await connection.disconnect()
+    async with ble.connect("AA:BB:CC:DD:EE:FF") as connection:
+        assert await connection.read(3) == b"value"
+        await connection.start_notify(5, lambda data: None)
+        await connection.stop_notify(5)
+        assert client.notifying == set()
     assert client.on_state is None and client.disconnects == [DEVICE]
 
 
@@ -339,10 +338,9 @@ async def test_a_device_dropping_its_proxied_connection_is_told(ble_and_node: tu
     client.advertise(MATTER_ADV)
     await asyncio.sleep(0.01)
     dropped: list[bool] = []
-    await ble.connect("AA:BB:CC:DD:EE:FF", on_disconnect=lambda: dropped.append(True))
-
-    assert client.on_state
-    client.on_state(False, 0, 0x13)  # the device went away
+    async with ble.connect("AA:BB:CC:DD:EE:FF", on_disconnect=lambda: dropped.append(True)):
+        assert client.on_state
+        client.on_state(False, 0, 0x13)  # the device went away
 
     assert dropped == [True]
 
@@ -351,10 +349,9 @@ async def test_notifying_an_unknown_handle_is_a_lookup_error(ble_and_node: tuple
     ble, client = ble_and_node
     client.advertise(MATTER_ADV)
     await asyncio.sleep(0.01)
-    connection = await ble.connect("AA:BB:CC:DD:EE:FF")
-
-    with pytest.raises(LookupError):
-        await connection.start_notify(99, lambda data: None)
+    async with ble.connect("AA:BB:CC:DD:EE:FF") as connection:
+        with pytest.raises(LookupError):
+            await connection.start_notify(99, lambda data: None)
 
 
 async def test_a_refused_connection_is_an_error(ble_and_node: tuple[BLEService, FakeAPIClient]):
@@ -362,7 +359,8 @@ async def test_a_refused_connection_is_an_error(ble_and_node: tuple[BLEService, 
     client.answers = (False, 0, 133)
     client.advertise(MATTER_ADV)
     with pytest.raises(ConnectionError, match="error 133"):
-        await ble.connect("AA:BB:CC:DD:EE:FF")
+        async with ble.connect("AA:BB:CC:DD:EE:FF"):
+            pass
 
 
 async def test_only_a_node_whose_proxy_pairs_can_encrypt_a_link():
@@ -420,8 +418,8 @@ async def test_a_leased_node_stays_subscribed_but_mutes_its_advertisements(
         client.advertise(NAME)
         await asyncio.sleep(0.01)
         assert len(listener.heard) == 1
-        await lease.connect()
-        assert client.connected == (DEVICE, 1)
+        async with lease.connect():
+            assert client.connected == (DEVICE, 1)
     client.advertise(MATTER_ADV)
     await asyncio.sleep(0.01)
     assert listener.heard[-1].advertisement.local_name == "Bulb"  # heard again, the muted name kept
@@ -708,6 +706,20 @@ async def test_turning_the_proxies_off_restarts_it_and_takes_every_radio_back(
     await wait_until(lambda: nodes.connection_of("kitchen") is not first, message="the node to reconnect")
     await asyncio.sleep(0.05)
     assert sources(ble) == [] and proxies(runtime) == []
+
+
+async def test_allowing_unencrypted_setup_applies_without_a_restart(
+    runtime: Runtime, esphome: ESPhomeController, mdns: FakeMDNS, nodes: Nodes, ble: BLEService
+):
+    await pair(esphome, mdns, "kitchen")
+    await wait_until(lambda: sources(ble) == [lent("kitchen")], message="the node to be lent")
+    first = nodes.connection_of("kitchen")
+
+    await runtime.update_settings(esphome, {"is_unencrypted_provisioning_allowed": True})
+
+    await asyncio.sleep(0.05)
+    assert esphome.settings.is_unencrypted_provisioning_allowed
+    assert nodes.connection_of("kitchen") is first and sources(ble) == [lent("kitchen")]
 
 
 async def test_unpairing_a_node_takes_back_only_its_radio(
