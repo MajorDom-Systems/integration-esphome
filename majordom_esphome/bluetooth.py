@@ -19,7 +19,7 @@ from aioesphomeapi import (
 from bleak.backends.device import BLEDevice
 from bleak.backends.scanner import AdvertisementData
 from bluetooth_data_tools import int_to_bluetooth_address, parse_advertisement_data_bytes
-from majordom_integration_sdk.capabilities import GattCharacteristic, GattService, OnAdvertisement
+from majordom_integration_sdk.capabilities import BLEPairingError, GattCharacteristic, GattService, OnAdvertisement
 
 _PROPERTIES = {0x02: "read", 0x04: "write-without-response", 0x08: "write", 0x10: "notify", 0x20: "indicate"}
 _CCCD = "00002902-0000-1000-8000-00805f9b34fb"
@@ -70,6 +70,17 @@ class ESPhomeBLEConnection:
         if stop := self._notifying.pop(handle, None):
             await stop()
 
+    async def pair(self):
+        result = await self._client.bluetooth_device_pair(self._address)
+        if not result.paired:
+            raise BLEPairingError(f"Pairing through the ESPHome node failed (error {result.error})")
+
+    async def unpair(self):
+        # the bond lives on this node, so a kept one serves only connections through it
+        result = await self._client.bluetooth_device_unpair(self._address)
+        if not result.success:
+            raise BLEPairingError(f"Unpairing through the ESPHome node failed (error {result.error})")
+
     async def disconnect(self):
         # the library drops the notify handlers once told the device disconnected, which unsubscribing stops
         self._client.bluetooth_gatt_stop_notify_for_address(self._address)
@@ -85,6 +96,8 @@ class ESPhomeBLESource:
         self.mac = mac  # of its Bluetooth radio
         self.name = f"esphome:{mac}"
         self._client, self._features = client, features
+        # the node pairs as its esp32_ble config says (ESP-IDF's default: Secure Connections when the device offers it)
+        self.is_pairable = bool(features & BluetoothProxyFeature.PAIRING)
         self._unsubscribe: Callable[[], None] | None = None
         self._unsubscribe_slots: Callable[[], None] | None = None
         self._paused = False
