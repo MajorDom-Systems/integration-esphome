@@ -340,6 +340,7 @@ async def test_notifying_an_unknown_handle_is_a_lookup_error(ble_and_node: tuple
 async def test_a_refused_connection_is_an_error(ble_and_node: tuple[BLEService, FakeAPIClient]):
     ble, client = ble_and_node
     client.answers = (False, 0, 133)
+    client.advertise(MATTER_ADV)
     with pytest.raises(ConnectionError, match="error 133"):
         await ble.connect("AA:BB:CC:DD:EE:FF")
 
@@ -1029,3 +1030,36 @@ async def test_a_border_router_coming_later_is_taken_in_place(
     await wait_until(lambda: "thread" in esphome.peripherals.bound, message="the border router to be handed over")
     assert runtime.status(esphome).state == PeripheralState.RUNNING
     assert len(nodes.clients) == opened, "ESPHome kept its node connections"
+
+
+async def test_a_node_makes_one_connection_at_a_time():
+    answering, connecting = asyncio.Event(), 0
+
+    class SlowClient(FakeAPIClient):
+        async def bluetooth_device_connect(self, *args: Any, **kwargs: Any) -> Callable[[], None]:
+            nonlocal connecting
+            connecting += 1
+            assert connecting == 1, "a second connection attempt while the node is busy with one"
+            await answering.wait()
+            connecting -= 1
+            return await super().bluetooth_device_connect(*args, **kwargs)
+
+    client = SlowClient()
+    source = await source_of(client)
+    assert source
+    await source.start(lambda device, adv: None)
+    client.advertise(MATTER_ADV)
+    attempts = [asyncio.create_task(source.connect("AA:BB:CC:DD:EE:FF", lambda: None)) for _ in range(3)]
+    await asyncio.sleep(0.01)
+    answering.set()
+    assert len(await asyncio.gather(*attempts)) == 3
+
+
+async def test_a_device_the_node_never_heard_is_refused_without_guessing_its_address_type():
+    client = FakeAPIClient()
+    source = await source_of(client)
+    assert source
+    await source.start(lambda device, adv: None)
+    with pytest.raises(ConnectionError, match="address type"):
+        await source.connect("AA:BB:CC:DD:EE:FF", lambda: None)
+    assert client.connected is None  # a public address guessed for a random one never connects
